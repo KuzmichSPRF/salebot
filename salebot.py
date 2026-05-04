@@ -17,19 +17,33 @@ GROUP_ID = int(os.getenv("GROUP_ID"))  # Telegram ID группы/канала (
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# Множество для хранения ID пользователей, ожидающих модерации
+pending_users = set()
+
 # Обработчик команды /start
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message):
-    await message.answer(
-        "Привет! Отправь мне фотографию с описанием лота (в одном сообщении), "
-        "и я передам её на модерацию администратору."
-    )
+    if message.from_user.id in pending_users:
+        await message.answer("Пожалуйста, дождись решения администратора по твоей предыдущей заявке.")
+    else:
+        await message.answer(
+            "Привет! Отправь мне фотографию с описанием лота (в одном сообщении), "
+            "и я передам её на модерацию администратору."
+        )
 
 # Обработчик сообщений с фото и текстом (описанием)
 @dp.message(F.photo & F.caption)
 async def handle_lot_submission(message: types.Message):
     user_id = message.from_user.id
     
+    # Проверяем, есть ли у пользователя уже активная заявка
+    if user_id in pending_users:
+        await message.answer("Пожалуйста, дождись решения администратора по твоей предыдущей заявке.")
+        return
+
+    # Добавляем пользователя в список ожидающих
+    pending_users.add(user_id)
+
     # Создаем inline-клавиатуру для администратора
     builder = InlineKeyboardBuilder()
     # В callback_data зашиваем ID пользователя, чтобы знать, кому отвечать
@@ -57,6 +71,9 @@ async def approve_lot(callback: types.CallbackQuery):
     # Извлекаем ID пользователя из callback_data
     user_id = int(callback.data.split("_")[1])
     
+    # Удаляем пользователя из списка ожидающих
+    pending_users.discard(user_id)
+
     # Достаем оригинальное описание, убирая приписку "Новый лот от..."
     original_caption = callback.message.caption.split("\n\n", 1)[-1]
 
@@ -86,6 +103,9 @@ async def approve_lot(callback: types.CallbackQuery):
 async def reject_lot(callback: types.CallbackQuery):
     user_id = int(callback.data.split("_")[1])
     
+    # Удаляем пользователя из списка ожидающих
+    pending_users.discard(user_id)
+
     # Уведомляем пользователя
     try:
         await bot.send_message(user_id, "😔 К сожалению, твой лот не прошел модерацию.")
@@ -103,7 +123,10 @@ async def reject_lot(callback: types.CallbackQuery):
 # Обработчик, если прислали текст без фото или фото без текста
 @dp.message(~F.photo | ~F.caption)
 async def handle_invalid_submission(message: types.Message):
-    if message.text != "/start":
+    user_id = message.from_user.id
+    if user_id in pending_users:
+        await message.answer("Пожалуйста, дождись решения администратора по твоей предыдущей заявке.")
+    elif message.text != "/start":
         await message.answer(
             "Пожалуйста, отправь картинку и описание лота *одним сообщением* "
             "(прикрепи фото и добавь к нему текст).",
