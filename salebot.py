@@ -10,8 +10,10 @@ load_dotenv()
 
 # ================= НАСТРОЙКИ =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))  # Telegram ID администратора (число)
-GROUP_ID = int(os.getenv("GROUP_ID"))  # Telegram ID группы/канала (начинается с -100)
+ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()] # Список ID админов
+_group_id_env = os.getenv("GROUP_ID", "")
+GROUP_ID = int(_group_id_env) if _group_id_env.lstrip('-').isdigit() else _group_id_env
+THREAD_ID = int(os.getenv("THREAD_ID")) if os.getenv("THREAD_ID") else None # ID ветки (топика)
 # =============================================
 
 bot = Bot(token=BOT_TOKEN)
@@ -55,13 +57,17 @@ async def handle_lot_submission(message: types.Message):
     username = f"@{message.from_user.username}" if message.from_user.username else f"ID: {user_id}"
     admin_caption = f"Новый лот от {username}:\n\n{message.caption}"
 
-    # Отправляем лот администратору
-    await bot.send_photo(
-        chat_id=ADMIN_ID,
-        photo=message.photo[-1].file_id, # Берем фото в лучшем качестве
-        caption=admin_caption,
-        reply_markup=builder.as_markup()
-    )
+    # Отправляем лот всем администраторам
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_photo(
+                chat_id=admin_id,
+                photo=message.photo[-1].file_id, # Берем фото в лучшем качестве
+                caption=admin_caption,
+                reply_markup=builder.as_markup()
+            )
+        except Exception as e:
+            logging.error(f"Не удалось отправить админу {admin_id}: {e}")
     
     await message.answer("Твой лот успешно отправлен на модерацию!")
 
@@ -71,6 +77,12 @@ async def approve_lot(callback: types.CallbackQuery):
     # Извлекаем ID пользователя из callback_data
     user_id = int(callback.data.split("_")[1])
     
+    # Проверяем, не обработал ли уже другой админ
+    if user_id not in pending_users:
+        await callback.answer("Эта заявка уже обработана другим администратором!", show_alert=True)
+        await callback.message.edit_reply_markup(reply_markup=None)
+        return
+
     # Удаляем пользователя из списка ожидающих
     pending_users.discard(user_id)
 
@@ -80,6 +92,7 @@ async def approve_lot(callback: types.CallbackQuery):
     # Публикуем в группу
     await bot.send_photo(
         chat_id=GROUP_ID,
+        message_thread_id=THREAD_ID,
         photo=callback.message.photo[-1].file_id,
         caption=original_caption
     )
@@ -103,6 +116,12 @@ async def approve_lot(callback: types.CallbackQuery):
 async def reject_lot(callback: types.CallbackQuery):
     user_id = int(callback.data.split("_")[1])
     
+    # Проверяем, не обработал ли уже другой админ
+    if user_id not in pending_users:
+        await callback.answer("Эта заявка уже обработана другим администратором!", show_alert=True)
+        await callback.message.edit_reply_markup(reply_markup=None)
+        return
+
     # Удаляем пользователя из списка ожидающих
     pending_users.discard(user_id)
 
