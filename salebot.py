@@ -21,7 +21,7 @@ dp = Dispatcher()
 pending_users = set()
 
 # Обработчик команды /start
-@dp.message(CommandStart())
+@dp.message(CommandStart(), F.chat.type == "private")
 async def start_cmd(message: types.Message):
     if message.from_user.id in pending_users:
         await message.answer("Пожалуйста, дождись решения администратора по твоей предыдущей заявке.")
@@ -32,7 +32,7 @@ async def start_cmd(message: types.Message):
         )
 
 # Обработчик сообщений с фото и текстом (описанием)
-@dp.message(F.photo & F.caption)
+@dp.message(F.photo & F.caption, F.chat.type == "private")
 async def handle_lot_submission(message: types.Message):
     user_id = message.from_user.id
     
@@ -121,7 +121,7 @@ async def reject_lot(callback: types.CallbackQuery):
     await callback.answer()
 
 # Обработчик, если прислали текст без фото или фото без текста
-@dp.message(~F.photo | ~F.caption)
+@dp.message(~F.photo | ~F.caption, F.chat.type == "private")
 async def handle_invalid_submission(message: types.Message):
     user_id = message.from_user.id
     if user_id in pending_users:
@@ -138,4 +138,7 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Бот остановлен вручную.")
