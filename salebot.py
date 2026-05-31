@@ -53,6 +53,17 @@ def load_storage():
             storage = {"rooms": [], "announcements": []}
     else:
         save_storage()
+        
+    # Инициализация списка групп для рассылки (сохраняем старую группу из .env для совместимости)
+    if "publish_groups" not in storage:
+        storage["publish_groups"] = []
+        if GROUP_ID:
+            storage["publish_groups"].append({
+                "chat_id": GROUP_ID,
+                "thread_id": THREAD_ID,
+                "name": "Основная группа (из .env)"
+            })
+        save_storage()
 
 
 def save_storage():
@@ -84,7 +95,6 @@ def format_room_list() -> str:
     for idx, room_name in enumerate(storage["rooms"], 1):
         count = sum(1 for item in storage["announcements"] if item["status"] == "approved" and item["room"] == room_name)
         lines.append(f"{idx}. {room_name} — {count} объявлений")
-    lines.append("\nОткрой комнату: /room Название_комнаты")
     return "\n".join(lines)
 
 
@@ -141,7 +151,10 @@ async def prompt_room_management(message: types.Message):
         "<b>Доступные команды:</b>\n"
         "➕ <b>Создать:</b> <code>/newroom Название</code>\n"
         "✏️ <b>Изменить:</b> <code>/editroom Старое_имя | Новое_имя</code>\n"
-        "❌ <b>Удалить:</b> <code>/delroom Название</code>",
+        "❌ <b>Удалить:</b> <code>/delroom Название</code>\n\n"
+        "📢 <b>Публикация в группы:</b>\n"
+        "📋 <b>Список групп:</b> <code>/groups</code>\n"
+        "➕ <b>Добавить группу:</b> добавь бота в группу и напиши там <code>/addgroup</code>",
         parse_mode="HTML",
         reply_markup=get_main_menu(message.from_user.id)
     )
@@ -225,6 +238,86 @@ async def del_room(message: types.Message):
     await message.answer(f"Комната '{room_name}' успешно удалена.", reply_markup=get_main_menu(message.from_user.id))
 
 
+@dp.message(F.text.startswith("/addgroup"))
+async def add_publish_group(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    chat_id = message.chat.id
+    thread_id = message.message_thread_id
+
+    if message.chat.type == "private":
+        await message.answer("Эту команду нужно использовать прямо в нужной группе, предварительно добавив туда бота.\nПросто добавь бота в группу и напиши там /addgroup")
+        return
+
+    storage.setdefault("publish_groups", [])
+    for g in storage["publish_groups"]:
+        if g["chat_id"] == chat_id and g.get("thread_id") == thread_id:
+            await message.answer("Эта группа (или ветка) уже добавлена в список для публикаций.")
+            return
+
+    parts = message.text.split(maxsplit=1)
+    name = parts[1] if len(parts) > 1 else message.chat.title or "Группа без названия"
+
+    storage["publish_groups"].append({
+        "chat_id": chat_id,
+        "thread_id": thread_id,
+        "name": name
+    })
+    save_storage()
+    await message.answer(f"✅ Группа '{name}' успешно добавлена для публикаций! Теперь одобренные лоты будут попадать и сюда.")
+
+
+@dp.message(F.text.startswith("/delgroup"))
+async def del_publish_group(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    chat_id = message.chat.id
+    thread_id = message.message_thread_id
+
+    if message.chat.type == "private":
+        parts = message.text.split()
+        if len(parts) == 2 and parts[1].isdigit():
+            idx = int(parts[1]) - 1
+            groups = storage.get("publish_groups", [])
+            if 0 <= idx < len(groups):
+                removed = groups.pop(idx)
+                save_storage()
+                await message.answer(f"✅ Группа '{removed['name']}' удалена из рассылки.")
+            else:
+                await message.answer("Неверный номер группы.")
+        else:
+            await message.answer("В личных сообщениях используй: /delgroup <номер_из_списка>\nИли напиши /delgroup прямо в группе.")
+        return
+
+    groups = storage.get("publish_groups", [])
+    for g in groups:
+        if g["chat_id"] == chat_id and g.get("thread_id") == thread_id:
+            groups.remove(g)
+            save_storage()
+            await message.answer("✅ Эта группа удалена из списка для публикаций.")
+            return
+
+    await message.answer("Эта группа не найдена в списке для публикаций.")
+
+
+@dp.message(F.text == "/groups", F.chat.type == "private")
+async def list_publish_groups(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    groups = storage.get("publish_groups", [])
+    if not groups:
+        await message.answer("Список групп для публикаций пуст.")
+        return
+    lines = ["📢 <b>Группы для публикаций:</b>"]
+    for i, g in enumerate(groups, 1):
+        thread_info = f" (Ветка: {g.get('thread_id')})" if g.get("thread_id") else ""
+        lines.append(f"{i}. {g.get('name')}{thread_info} — ID: {g['chat_id']}")
+    lines.append("\nЧтобы удалить группу, введи <code>/delgroup номер</code>")
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
 @dp.message((F.text == "/rooms") | (F.text == "🏠 Комнаты"), F.chat.type == "private")
 async def list_rooms(message: types.Message):
     builder = InlineKeyboardBuilder()
@@ -276,7 +369,6 @@ async def my_ads(message: types.Message):
     for item in user_items:
         room = item.get("room", "—")
         lines.append(f"ID {item['id']}: {item['status']} в комнате {room}")
-    lines.append("\nЧтобы посмотреть объявление подробнее, используй /room Название_комнаты")
     await message.answer("\n".join(lines), reply_markup=get_main_menu(user_id))
 
 
@@ -441,22 +533,29 @@ async def approve_lot(callback: types.CallbackQuery):
     except Exception as e:
         logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
-    try:
-        await bot.send_photo(
-            chat_id=GROUP_ID,
-            message_thread_id=THREAD_ID,
-            photo=announcement["photo_file_id"],
-            caption=announcement["caption"]
-        )
-    except Exception as e:
-        logging.error(f"Не удалось опубликовать объявление в группе: {e}")
+    groups = storage.get("publish_groups", [])
+    if not groups and GROUP_ID:
+        groups = [{"chat_id": GROUP_ID, "thread_id": THREAD_ID}]
+
+    published_count = 0
+    for grp in groups:
+        try:
+            await bot.send_photo(
+                chat_id=grp["chat_id"],
+                message_thread_id=grp.get("thread_id"),
+                photo=announcement["photo_file_id"],
+                caption=announcement["caption"]
+            )
+            published_count += 1
+        except Exception as e:
+            logging.error(f"Не удалось опубликовать объявление в группе {grp.get('chat_id')}: {e}")
 
     await callback.message.edit_caption(
         caption=f"{callback.message.caption}\n\n<b>[✅ ОДОБРЕНО В КОМНАТУ {room_name}]</b>",
         reply_markup=None,
         parse_mode="HTML"
     )
-    await callback.answer(f"Объявление сохранено в комнате '{room_name}'.")
+    await callback.answer(f"Сохранено и отправлено в {published_count} групп(ы).")
 
 
 @dp.callback_query(F.data.startswith("reject_"))
