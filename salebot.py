@@ -323,12 +323,50 @@ async def list_publish_groups(message: types.Message):
     if not groups:
         await message.answer("Список групп для публикаций пуст.")
         return
-    lines = ["📢 <b>Группы для публикаций:</b>"]
-    for i, g in enumerate(groups, 1):
+
+    builder = InlineKeyboardBuilder()
+    for i, g in enumerate(groups):
         thread_info = f" (Ветка: {g.get('thread_id')})" if g.get("thread_id") else ""
-        lines.append(f"{i}. {g.get('name')}{thread_info} — ID: {g['chat_id']}")
-    lines.append("\nЧтобы удалить группу, введи <code>/delgroup номер</code>")
-    await message.answer("\n".join(lines), parse_mode="HTML")
+        builder.button(text=f"❌ Удалить {g.get('name')}{thread_info}", callback_data=f"delgroup_{i}")
+    builder.adjust(1)
+
+    await message.answer(
+        "📢 <b>Группы для публикаций:</b>\nНажми на кнопку, чтобы удалить группу из рассылки.",
+        parse_mode="HTML",
+        reply_markup=builder.as_markup()
+    )
+
+
+@dp.callback_query(F.data.startswith("delgroup_"))
+async def callback_del_group(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Только администратор может удалять группы.", show_alert=True)
+        return
+
+    idx = int(callback.data.split("_")[1])
+    groups = storage.get("publish_groups", [])
+    
+    if 0 <= idx < len(groups):
+        removed = groups.pop(idx)
+        save_storage()
+        await callback.answer(f"Группа '{removed['name']}' удалена.", show_alert=True)
+        
+        # Обновляем сообщение, если удалили не последнюю группу, иначе пишем, что список пуст
+        if not groups:
+            await callback.message.edit_text("Список групп для публикаций пуст.")
+        else:
+            builder = InlineKeyboardBuilder()
+            for i, g in enumerate(groups):
+                thread_info = f" (Ветка: {g.get('thread_id')})" if g.get("thread_id") else ""
+                builder.button(text=f"❌ Удалить {g.get('name')}{thread_info}", callback_data=f"delgroup_{i}")
+            builder.adjust(1)
+            await callback.message.edit_text(
+                "📢 <b>Группы для публикаций:</b>\nНажми на кнопку, чтобы удалить группу из рассылки.",
+                parse_mode="HTML",
+                reply_markup=builder.as_markup()
+            )
+    else:
+        await callback.answer("Группа не найдена или уже удалена.", show_alert=True)
 
 
 @dp.message((F.text == "/rooms") | (F.text == "🏠 Комнаты"), F.chat.type == "private")
