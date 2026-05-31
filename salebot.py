@@ -37,7 +37,7 @@ def get_main_menu(user_id: int = None) -> types.ReplyKeyboardMarkup:
         [types.KeyboardButton(text="📬 Мои объявления")],
     ]
     if user_id in ADMIN_IDS:
-        buttons.append([types.KeyboardButton(text="🛠 Управление комнатами")])
+        buttons.append([types.KeyboardButton(text="🛠 Управление комнатами"), types.KeyboardButton(text="📖 Инструкция")])
     buttons.append([types.KeyboardButton(text="� Главное меню")])
     return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True, one_time_keyboard=False)
 
@@ -140,6 +140,24 @@ async def start_cmd(message: types.Message):
 @dp.message(F.text == "🔄 Главное меню", F.chat.type == "private")
 async def main_menu(message: types.Message):
     await start_cmd(message)
+
+
+@dp.message(F.text == "📖 Инструкция", F.chat.type == "private")
+async def admin_instruction(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+        
+    file_path = os.path.join(os.path.dirname(__file__), "admin_guide.txt")
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                text = f.read()
+            await message.answer(text)
+        except Exception as e:
+            logging.error(f"Ошибка при чтении инструкции: {e}")
+            await message.answer("Произошла ошибка при загрузке инструкции.")
+    else:
+        await message.answer("Файл инструкции (admin_guide.txt) не найден.")
 
 
 @dp.message(F.text == "🛠 Управление комнатами", F.chat.type == "private")
