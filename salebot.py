@@ -6,6 +6,8 @@ from datetime import datetime
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 load_dotenv()
@@ -21,6 +23,10 @@ DATA_FILE = os.path.join(os.path.dirname(__file__), "storage.json")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+
+class AdminReject(StatesGroup):
+    waiting_for_reason = State()
 
 pending_users = set()
 announcement_index = {}
@@ -650,7 +656,7 @@ async def approve_lot(callback: types.CallbackQuery):
 
 
 @dp.callback_query(F.data.startswith("reject_"))
-async def reject_lot(callback: types.CallbackQuery):
+async def reject_lot_start(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("Только администратор может отклонять объявления.", show_alert=True)
         return
@@ -662,6 +668,32 @@ async def reject_lot(callback: types.CallbackQuery):
         await callback.message.edit_reply_markup(reply_markup=None)
         return
 
+    await state.set_state(AdminReject.waiting_for_reason)
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Без причины", callback_data="skip_reason")
+    builder.button(text="Отмена", callback_data="cancel_reject")
+    builder.adjust(2)
+
+    prompt_msg = await callback.message.reply(
+        "Напиши причину отказа для пользователя текстом ниже или выбери действие:", 
+        reply_markup=builder.as_markup()
+    )
+
+    await state.update_data(
+        announcement_id=announcement_id,
+        admin_msg_id=callback.message.message_id,
+        orig_caption=callback.message.caption or "",
+        prompt_msg_id=prompt_msg.message_id
+    )
+    await callback.answer()
+
+
+async def finalize_rejection(announcement_id: int, admin_chat_id: int, admin_msg_id: int, orig_caption: str, reason: str = None):
+    announcement = find_announcement_by_id(announcement_id)
+    if not announcement or announcement["status"] != "pending":
+        return False
+
     announcement["status"] = "rejected"
     save_storage()
 
@@ -669,17 +701,69 @@ async def reject_lot(callback: types.CallbackQuery):
     pending_users.discard(user_id)
     announcement_index.pop(user_id, None)
 
+    msg_text = "😔 К сожалению, твое объявление не прошло модерацию."
+    if reason:
+        msg_text += f"\n\n<b>Причина отказа:</b> {reason}"
+
     try:
-        await bot.send_message(user_id, "😔 К сожалению, твое объявление не прошло модерацию.")
+        await bot.send_message(user_id, msg_text, parse_mode="HTML")
     except Exception as e:
         logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
-    await callback.message.edit_caption(
-        caption=f"{callback.message.caption}\n\n<b>[❌ ОТКЛОНЕНО]</b>",
-        reply_markup=None,
-        parse_mode="HTML"
+    try:
+        await bot.edit_message_caption(
+            chat_id=admin_chat_id,
+            message_id=admin_msg_id,
+            caption=f"{orig_caption}\n\n<b>[❌ ОТКЛОНЕНО]</b>" + (f"\nПричина: {reason}" if reason else ""),
+            reply_markup=None,
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        logging.error(f"Не удалось обновить сообщение админа {admin_msg_id}: {e}")
+
+    return True
+
+
+@dp.message(AdminReject.waiting_for_reason, F.text)
+async def reject_reason_text(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    
+    await state.clear()
+    try:
+        await bot.delete_message(message.chat.id, data.get("prompt_msg_id"))
+    except Exception:
+        pass
+        
+    success = await finalize_rejection(
+        data.get("announcement_id"), message.chat.id, data.get("admin_msg_id"), data.get("orig_caption"), message.text
     )
-    await callback.answer()
+    if success:
+        await message.reply("✅ Объявление отклонено, пользователю отправлена причина.")
+    else:
+        await message.reply("❌ Ошибка: заявка уже обработана или не найдена.")
+
+
+@dp.callback_query(AdminReject.waiting_for_reason)
+async def reject_reason_callback(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    
+    await state.clear()
+    try:
+        await bot.delete_message(callback.message.chat.id, data.get("prompt_msg_id"))
+    except Exception:
+        pass
+        
+    if callback.data == "cancel_reject":
+        await callback.answer("Отклонение отменено.")
+        return
+        
+    if callback.data == "skip_reason":
+        success = await finalize_rejection(
+            data.get("announcement_id"), callback.message.chat.id, data.get("admin_msg_id"), data.get("orig_caption"), None
+        )
+        text = "✅ Объявление отклонено без причины." if success else "❌ Ошибка: заявка уже обработана."
+        await bot.send_message(callback.message.chat.id, text, reply_to_message_id=data.get("admin_msg_id"))
+        await callback.answer()
 
 
 @dp.callback_query(F.data.startswith("deletead_"))
