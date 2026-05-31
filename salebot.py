@@ -88,6 +88,12 @@ def get_user_room_keyboard(announcement_id: int):
     return builder.as_markup()
 
 
+def get_admin_ad_keyboard(announcement_id: int):
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🗑 Удалить", callback_data=f"deletead_{announcement_id}")
+    return builder.as_markup()
+
+
 def format_room_list() -> str:
     if not storage["rooms"]:
         return "Пока нет комнат. Админ может создать комнату командой /newroom Название"
@@ -298,6 +304,18 @@ async def add_publish_group(message: types.Message):
     save_storage()
     await message.answer(f"✅ Чат '{name}' успешно добавлен для публикаций!")
 
+    admin_name = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
+    for admin_id in ADMIN_IDS:
+        if admin_id != message.from_user.id:
+            try:
+                await bot.send_message(
+                    chat_id=admin_id,
+                    text=f"📢 Администратор {admin_name} добавил новый чат для публикаций: <b>{name}</b>",
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                logging.error(f"Не удалось отправить уведомление админу {admin_id}: {e}")
+
 
 @dp.message(F.text.startswith("/delgroup"))
 async def del_publish_group(message: types.Message):
@@ -418,11 +436,13 @@ async def show_room(message: types.Message):
 
     await message.answer(f"Объявления в комнате '{room_name}':")
     for item in items:
+        reply_markup = get_admin_ad_keyboard(item["id"]) if message.from_user.id in ADMIN_IDS else None
         await bot.send_photo(
             chat_id=message.from_user.id,
             photo=item["photo_file_id"],
             caption=format_announcement(item),
-            parse_mode="HTML"
+            parse_mode="HTML",
+            reply_markup=reply_markup
         )
 
 
@@ -456,11 +476,13 @@ async def open_room(callback: types.CallbackQuery):
     await callback.answer()
     await bot.send_message(callback.from_user.id, f"Объявления в комнате '{room_name}':")
     for item in items:
+        reply_markup = get_admin_ad_keyboard(item["id"]) if callback.from_user.id in ADMIN_IDS else None
         await bot.send_photo(
             chat_id=callback.from_user.id,
             photo=item["photo_file_id"],
             caption=format_announcement(item),
-            parse_mode="HTML"
+            parse_mode="HTML",
+            reply_markup=reply_markup
         )
 
 
@@ -658,6 +680,31 @@ async def reject_lot(callback: types.CallbackQuery):
         parse_mode="HTML"
     )
     await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("deletead_"))
+async def delete_ad(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Только администратор может удалять объявления.", show_alert=True)
+        return
+
+    ad_id = int(callback.data.split("_")[1])
+    announcement = find_announcement_by_id(ad_id)
+    
+    if not announcement or announcement["status"] != "approved":
+        await callback.answer("Объявление не найдено или уже удалено.", show_alert=True)
+        await callback.message.edit_reply_markup(reply_markup=None)
+        return
+
+    announcement["status"] = "deleted"
+    save_storage()
+    
+    await callback.message.edit_caption(
+        caption=f"{callback.message.caption}\n\n<b>[❌ УДАЛЕНО АДМИНИСТРАТОРОМ]</b>",
+        reply_markup=None,
+        parse_mode="HTML"
+    )
+    await callback.answer("Объявление удалено из базы.")
 
 
 @dp.message(~F.photo | ~F.caption, F.chat.type == "private")
