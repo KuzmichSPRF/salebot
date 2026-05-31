@@ -152,9 +152,9 @@ async def prompt_room_management(message: types.Message):
         "➕ <b>Создать:</b> <code>/newroom Название</code>\n"
         "✏️ <b>Изменить:</b> <code>/editroom Старое_имя | Новое_имя</code>\n"
         "❌ <b>Удалить:</b> <code>/delroom Название</code>\n\n"
-        "📢 <b>Публикация в группы:</b>\n"
-        "📋 <b>Список групп:</b> <code>/groups</code>\n"
-        "➕ <b>Добавить группу:</b> добавь бота в группу и напиши там <code>/addgroup</code>",
+        "📢 <b>Публикация:</b>\n"
+        "📋 <b>Список чатов:</b> <code>/groups</code>\n"
+        "➕ <b>Добавить чат:</b> напиши <code>/addgroup</code> в самой группе ИЛИ отправь боту <code>/addgroup ID_чата Название</code>",
         parse_mode="HTML",
         reply_markup=get_main_menu(message.from_user.id)
     )
@@ -243,21 +243,34 @@ async def add_publish_group(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
         return
 
-    chat_id = message.chat.id
-    thread_id = message.message_thread_id
-
+    parts = message.text.split(maxsplit=2)
+    
     if message.chat.type == "private":
-        await message.answer("Эту команду нужно использовать прямо в нужной группе, предварительно добавив туда бота.\nПросто добавь бота в группу и напиши там /addgroup")
-        return
+        if len(parts) < 2:
+            await message.answer(
+                "Чтобы добавить канал или группу через личные сообщения, используй формат:\n"
+                "<code>/addgroup -1001234567890 Название</code>\n\n"
+                "Либо просто добавь бота в саму группу и напиши там <code>/addgroup</code>",
+                parse_mode="HTML"
+            )
+            return
+        try:
+            chat_id = int(parts[1])
+        except ValueError:
+            await message.answer("ID чата/канала должен быть числом (обычно начинается с -100).")
+            return
+        thread_id = None
+        name = parts[2] if len(parts) > 2 else f"Чат {chat_id}"
+    else:
+        chat_id = message.chat.id
+        thread_id = message.message_thread_id
+        name = parts[1] if len(parts) > 1 else message.chat.title or "Группа без названия"
 
     storage.setdefault("publish_groups", [])
     for g in storage["publish_groups"]:
         if g["chat_id"] == chat_id and g.get("thread_id") == thread_id:
-            await message.answer("Эта группа (или ветка) уже добавлена в список для публикаций.")
+            await message.answer("Этот чат (или ветка) уже добавлен в список для публикаций.")
             return
-
-    parts = message.text.split(maxsplit=1)
-    name = parts[1] if len(parts) > 1 else message.chat.title or "Группа без названия"
 
     storage["publish_groups"].append({
         "chat_id": chat_id,
@@ -265,7 +278,7 @@ async def add_publish_group(message: types.Message):
         "name": name
     })
     save_storage()
-    await message.answer(f"✅ Группа '{name}' успешно добавлена для публикаций! Теперь одобренные лоты будут попадать и сюда.")
+    await message.answer(f"✅ Чат '{name}' успешно добавлен для публикаций!")
 
 
 @dp.message(F.text.startswith("/delgroup"))
