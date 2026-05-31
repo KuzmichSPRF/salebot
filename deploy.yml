@@ -17,15 +17,15 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: ${{ secrets.SERVER_PORT }} # Обычно 22
           script: |
-            # Переходим в директорию с проектом на сервере
-            cd /path/to/your/salebot
+            # Переходим в директорию с проектом на сервере для пользователя botuser
+            cd /home/botuser/salebot
             
             # Подтягиваем свежие изменения
             git pull origin main
             
-            # Опционально: установка новых зависимостей (раскомментируйте, если нужно)
+            # Опционально: установка новых зависимостей
             # source venv/bin/activate
             # pip install -r requirements.txt
             
-            # Перезапускаем сервис бота (пример для systemd)
+            # Перезапускаем сервис бота
             sudo systemctl restart salebot.service
