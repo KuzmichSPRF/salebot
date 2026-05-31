@@ -37,8 +37,8 @@ def get_main_menu(user_id: int = None) -> types.ReplyKeyboardMarkup:
         [types.KeyboardButton(text="📬 Мои объявления")],
     ]
     if user_id in ADMIN_IDS:
-        buttons.append([types.KeyboardButton(text="➕ Создать комнату")])
-    buttons.append([types.KeyboardButton(text="🔄 Главное меню")])
+        buttons.append([types.KeyboardButton(text="🛠 Управление комнатами")])
+    buttons.append([types.KeyboardButton(text="� Главное меню")])
     return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True, one_time_keyboard=False)
 
 
@@ -132,12 +132,19 @@ async def main_menu(message: types.Message):
     await start_cmd(message)
 
 
-@dp.message(F.text == "➕ Создать комнату", F.chat.type == "private")
-async def prompt_newroom(message: types.Message):
+@dp.message(F.text == "🛠 Управление комнатами", F.chat.type == "private")
+async def prompt_room_management(message: types.Message):
     if message.from_user.id not in ADMIN_IDS:
-        await message.answer("Только администратор может создавать комнаты.", reply_markup=get_main_menu(message.from_user.id))
+        await message.answer("Только администратор может управлять комнатами.", reply_markup=get_main_menu(message.from_user.id))
         return
-    await message.answer("Использование: /newroom Название_комнаты", reply_markup=get_main_menu(message.from_user.id))
+    await message.answer(
+        "<b>Доступные команды:</b>\n"
+        "➕ <b>Создать:</b> <code>/newroom Название</code>\n"
+        "✏️ <b>Изменить:</b> <code>/editroom Старое_имя | Новое_имя</code>\n"
+        "❌ <b>Удалить:</b> <code>/delroom Название</code>",
+        parse_mode="HTML",
+        reply_markup=get_main_menu(message.from_user.id)
+    )
 
 
 @dp.message(F.text.startswith("/newroom"), F.chat.type == "private")
@@ -163,6 +170,59 @@ async def add_room(message: types.Message):
     storage["rooms"].append(room_name)
     save_storage()
     await message.answer(f"Комната '{room_name}' успешно создана.", reply_markup=get_main_menu(message.from_user.id))
+
+
+@dp.message(F.text.startswith("/editroom"), F.chat.type == "private")
+async def edit_room(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Только администратор может редактировать комнаты.")
+        return
+
+    text_without_cmd = message.text[len("/editroom"):].strip()
+    parts = [p.strip() for p in text_without_cmd.split("|")]
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        await message.answer("Использование: /editroom Старое_название | Новое_название\n(например: /editroom Авто | Автомобили)", reply_markup=get_main_menu(message.from_user.id))
+        return
+
+    old_name, new_name = parts[0], parts[1]
+
+    if old_name not in storage["rooms"]:
+        await message.answer(f"Комната '{old_name}' не найдена.", reply_markup=get_main_menu(message.from_user.id))
+        return
+
+    if new_name in storage["rooms"]:
+        await message.answer(f"Комната '{new_name}' уже существует.", reply_markup=get_main_menu(message.from_user.id))
+        return
+
+    idx = storage["rooms"].index(old_name)
+    storage["rooms"][idx] = new_name
+
+    for ann in storage["announcements"]:
+        if ann.get("room") == old_name:
+            ann["room"] = new_name
+
+    save_storage()
+    await message.answer(f"Комната '{old_name}' успешно переименована в '{new_name}'.", reply_markup=get_main_menu(message.from_user.id))
+
+
+@dp.message(F.text.startswith("/delroom"), F.chat.type == "private")
+async def del_room(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Только администратор может удалять комнаты.")
+        return
+
+    room_name = message.text[len("/delroom"):].strip()
+    if not room_name:
+        await message.answer("Использование: /delroom Название_комнаты", reply_markup=get_main_menu(message.from_user.id))
+        return
+
+    if room_name not in storage["rooms"]:
+        await message.answer(f"Комната '{room_name}' не найдена.", reply_markup=get_main_menu(message.from_user.id))
+        return
+
+    storage["rooms"].remove(room_name)
+    save_storage()
+    await message.answer(f"Комната '{room_name}' успешно удалена.", reply_markup=get_main_menu(message.from_user.id))
 
 
 @dp.message((F.text == "/rooms") | (F.text == "🏠 Комнаты"), F.chat.type == "private")
