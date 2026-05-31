@@ -1,6 +1,8 @@
 import asyncio
+import json
 import logging
 import os
+from datetime import datetime
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
@@ -10,128 +12,391 @@ load_dotenv()
 
 # ================= НАСТРОЙКИ =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()] # Список ID админов
+ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 _group_id_env = os.getenv("GROUP_ID", "")
 GROUP_ID = int(_group_id_env) if _group_id_env.lstrip('-').isdigit() else _group_id_env
-THREAD_ID = int(os.getenv("THREAD_ID")) if os.getenv("THREAD_ID") else None # ID ветки (топика)
+THREAD_ID = int(os.getenv("THREAD_ID")) if os.getenv("THREAD_ID") else None
+DATA_FILE = os.path.join(os.path.dirname(__file__), "storage.json")
 # =============================================
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Множество для хранения ID пользователей, ожидающих модерации
 pending_users = set()
+announcement_index = {}
 
-# Обработчик команды /start
+storage = {
+    "rooms": [],
+    "announcements": []
+}
+
+
+def get_main_menu(user_id: int = None) -> types.ReplyKeyboardMarkup:
+    buttons = [
+        [types.KeyboardButton(text="🏠 Комнаты")],
+        [types.KeyboardButton(text="📬 Мои объявления")],
+    ]
+    if user_id in ADMIN_IDS:
+        buttons.append([types.KeyboardButton(text="➕ Создать комнату")])
+    buttons.append([types.KeyboardButton(text="🔄 Главное меню")])
+    return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True, one_time_keyboard=False)
+
+
+def load_storage():
+    global storage
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                storage = json.load(f)
+        except Exception as e:
+            logging.error(f"Ошибка загрузки storage.json: {e}")
+            storage = {"rooms": [], "announcements": []}
+    else:
+        save_storage()
+
+
+def save_storage():
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(storage, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.error(f"Ошибка сохранения storage.json: {e}")
+
+
+def normalize_room(name: str) -> str:
+    return name.strip()
+
+
+def get_room_keyboard(announcement_id: int):
+    builder = InlineKeyboardBuilder()
+    if not storage["rooms"]:
+        builder.button(text="Нет комнат. Создай /newroom", callback_data="no_rooms")
+        return builder.as_markup()
+
+    for room_name in storage["rooms"]:
+        callback = f"selectroom_{announcement_id}_{room_name}"
+        builder.button(text=room_name, callback_data=callback)
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def format_room_list() -> str:
+    if not storage["rooms"]:
+        return "Пока нет комнат. Админ может создать комнату командой /newroom Название"
+    lines = ["💬 Доступные комнаты:"]
+    for idx, room_name in enumerate(storage["rooms"], 1):
+        count = sum(1 for item in storage["announcements"] if item["status"] == "approved" and item["room"] == room_name)
+        lines.append(f"{idx}. {room_name} — {count} объявлений")
+    lines.append("\nОткрой комнату: /room Название_комнаты")
+    return "\n".join(lines)
+
+
+def format_announcement(item: dict) -> str:
+    created = item.get("created_at", "—")
+    owner = item.get("username", f"ID:{item.get('user_id')}")
+    status = item.get("status", "unknown")
+    room = item.get("room", "—")
+    return (
+        f"📌 ID: {item['id']}\n"
+        f"👤 От: {owner}\n"
+        f"🕒 Добавлено: {created}\n"
+        f"🏷️ Статус: {status}\n"
+        f"📂 Комната: {room}\n"
+        f"Описание: {item['caption']}"
+    )
+
+
+def find_announcement_by_id(announcement_id: int):
+    for item in storage["announcements"]:
+        if item["id"] == announcement_id:
+            return item
+    return None
+
+
+def build_admin_caption(message: types.Message) -> str:
+    username = f"@{message.from_user.username}" if message.from_user.username else f"ID: {message.from_user.id}"
+    return f"Новый лот от {username}:\n\n{message.caption}"
+
+
 @dp.message(CommandStart(), F.chat.type == "private")
 async def start_cmd(message: types.Message):
     if message.from_user.id in pending_users:
-        await message.answer("Пожалуйста, дождись решения администратора по твоей предыдущей заявке.")
+        await message.answer("Пожалуйста, дождись решения администратора по твоей предыдущей заявке.", reply_markup=get_main_menu(message.from_user.id))
     else:
         await message.answer(
-            "Привет! Отправь мне фотографию с описанием лота ЦЕНОЙ и своим КОНТАКТОМ (в одном сообщении), "
-            "и я передам её на модерацию администратору."
+            "Привет! Отправь мне фото и описание своего объявления одним сообщением. "
+            "После модерации админ выберет комнату, куда сохранить твое объявление, а ты сможешь зайти и читать объявления из комнаты.",
+            reply_markup=get_main_menu(message.from_user.id)
         )
 
-# Обработчик сообщений с фото и текстом (описанием)
+
+@dp.message(F.text == "🔄 Главное меню", F.chat.type == "private")
+async def main_menu(message: types.Message):
+    await start_cmd(message)
+
+
+@dp.message(F.text == "➕ Создать комнату", F.chat.type == "private")
+async def prompt_newroom(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Только администратор может создавать комнаты.", reply_markup=get_main_menu(message.from_user.id))
+        return
+    await message.answer("Использование: /newroom Название_комнаты", reply_markup=get_main_menu(message.from_user.id))
+
+
+@dp.message(F.text.startswith("/newroom"), F.chat.type == "private")
+async def add_room(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("Только администратор может создавать комнаты.")
+        return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.answer("Использование: /newroom Название_комнаты", reply_markup=get_main_menu(message.from_user.id))
+        return
+
+    room_name = normalize_room(parts[1])
+    if not room_name:
+        await message.answer("Название комнаты не может быть пустым.")
+        return
+
+    if room_name in storage["rooms"]:
+        await message.answer(f"Комната '{room_name}' уже существует.", reply_markup=get_main_menu(message.from_user.id))
+        return
+
+    storage["rooms"].append(room_name)
+    save_storage()
+    await message.answer(f"Комната '{room_name}' успешно создана.", reply_markup=get_main_menu(message.from_user.id))
+
+
+@dp.message((F.text == "/rooms") | (F.text == "🏠 Комнаты"), F.chat.type == "private")
+async def list_rooms(message: types.Message):
+    builder = InlineKeyboardBuilder()
+    if storage["rooms"]:
+        for room_name in storage["rooms"]:
+            builder.button(text=room_name, callback_data=f"openroom:{room_name}")
+        builder.adjust(1)
+        await message.answer(format_room_list(), reply_markup=builder.as_markup())
+    else:
+        await message.answer(format_room_list(), reply_markup=get_main_menu(message.from_user.id))
+
+
+@dp.message(F.text.startswith("/room"), F.chat.type == "private")
+async def show_room(message: types.Message):
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.answer("Использование: /room Название_комнаты", reply_markup=get_main_menu(message.from_user.id))
+        return
+
+    room_name = normalize_room(parts[1])
+    if room_name not in storage["rooms"]:
+        await message.answer(f"Комната '{room_name}' не найдена. Используй /rooms для списка комнат.", reply_markup=get_main_menu(message.from_user.id))
+        return
+
+    items = [item for item in storage["announcements"] if item["status"] == "approved" and item["room"] == room_name]
+    if not items:
+        await message.answer(f"В комнате '{room_name}' пока нет одобренных объявлений.")
+        return
+
+    await message.answer(f"Объявления в комнате '{room_name}':")
+    for item in items:
+        await bot.send_photo(
+            chat_id=message.from_user.id,
+            photo=item["photo_file_id"],
+            caption=format_announcement(item),
+            parse_mode="HTML"
+        )
+
+
+@dp.message((F.text == "/myads") | (F.text == "📬 Мои объявления"), F.chat.type == "private")
+async def my_ads(message: types.Message):
+    user_id = message.from_user.id
+    user_items = [item for item in storage["announcements"] if item["user_id"] == user_id]
+    if not user_items:
+        await message.answer("У тебя еще нет объявлений.", reply_markup=get_main_menu(user_id))
+        return
+
+    lines = ["Твои объявления:"]
+    for item in user_items:
+        room = item.get("room", "—")
+        lines.append(f"ID {item['id']}: {item['status']} в комнате {room}")
+    lines.append("\nЧтобы посмотреть объявление подробнее, используй /room Название_комнаты")
+    await message.answer("\n".join(lines), reply_markup=get_main_menu(user_id))
+
+
+@dp.callback_query(F.data.startswith("openroom:"))
+async def open_room(callback: types.CallbackQuery):
+    room_name = callback.data.split(":", 1)[1]
+    if room_name not in storage["rooms"]:
+        await callback.answer("Комната не найдена.", show_alert=True)
+        return
+
+    items = [item for item in storage["announcements"] if item["status"] == "approved" and item["room"] == room_name]
+    if not items:
+        await callback.answer(f"В комнате '{room_name}' пока нет одобренных объявлений.")
+        return
+
+    await callback.answer()
+    await bot.send_message(callback.from_user.id, f"Объявления в комнате '{room_name}':")
+    for item in items:
+        await bot.send_photo(
+            chat_id=callback.from_user.id,
+            photo=item["photo_file_id"],
+            caption=format_announcement(item),
+            parse_mode="HTML"
+        )
+
+
 @dp.message(F.photo & F.caption, F.chat.type == "private")
 async def handle_lot_submission(message: types.Message):
     user_id = message.from_user.id
-    
-    # Проверяем, есть ли у пользователя уже активная заявка
     if user_id in pending_users:
         await message.answer("Пожалуйста, дождись решения администратора по твоей предыдущей заявке.")
         return
 
-    # Добавляем пользователя в список ожидающих
-    pending_users.add(user_id)
+    announcement_id = len(storage["announcements"]) + 1
+    caption = message.caption.strip()
+    username = f"@{message.from_user.username}" if message.from_user.username else f"ID: {user_id}"
 
-    # Создаем inline-клавиатуру для администратора
+    announcement = {
+        "id": announcement_id,
+        "user_id": user_id,
+        "username": username,
+        "photo_file_id": message.photo[-1].file_id,
+        "caption": caption,
+        "status": "pending",
+        "room": None,
+        "created_at": datetime.utcnow().isoformat(sep=" ", timespec="seconds"),
+        "approved_at": None,
+        "admin_id": None
+    }
+
+    storage["announcements"].append(announcement)
+    save_storage()
+    pending_users.add(user_id)
+    announcement_index[user_id] = announcement_id
+
     builder = InlineKeyboardBuilder()
-    # В callback_data зашиваем ID пользователя, чтобы знать, кому отвечать
-    builder.button(text="✅ Одобрить", callback_data=f"approve_{user_id}")
-    builder.button(text="❌ Отклонить", callback_data=f"reject_{user_id}")
+    builder.button(text="✅ Одобрить", callback_data=f"approve_{announcement_id}")
+    builder.button(text="❌ Отклонить", callback_data=f"reject_{announcement_id}")
     builder.adjust(2)
 
-    # Формируем сообщение для админа
-    username = f"@{message.from_user.username}" if message.from_user.username else f"ID: {user_id}"
-    admin_caption = f"Новый лот от {username}:\n\n{message.caption}"
-
-    # Отправляем лот всем администраторам
+    admin_caption = f"Новый лот от {username}:\n\n{caption}"
     for admin_id in ADMIN_IDS:
         try:
             await bot.send_photo(
                 chat_id=admin_id,
-                photo=message.photo[-1].file_id, # Берем фото в лучшем качестве
+                photo=announcement["photo_file_id"],
                 caption=admin_caption,
                 reply_markup=builder.as_markup()
             )
         except Exception as e:
             logging.error(f"Не удалось отправить админу {admin_id}: {e}")
-    
-    await message.answer("Твой лот успешно отправлен на модерацию!")
 
-# Обработчик нажатия кнопки "Одобрить"
+    await message.answer("Твой лот отправлен на модерацию. Администратор выберет комнату, куда сохранить объявление.")
+
+
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve_lot(callback: types.CallbackQuery):
-    # Извлекаем ID пользователя из callback_data
-    user_id = int(callback.data.split("_")[1])
-    
-    # Проверяем, не обработал ли уже другой админ
-    if user_id not in pending_users:
-        await callback.answer("Эта заявка уже обработана другим администратором!", show_alert=True)
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Только администратор может одобрять объявления.", show_alert=True)
+        return
+
+    announcement_id = int(callback.data.split("_")[1])
+    announcement = find_announcement_by_id(announcement_id)
+    if not announcement or announcement["status"] != "pending":
+        await callback.answer("Эта заявка уже обработана.", show_alert=True)
         await callback.message.edit_reply_markup(reply_markup=None)
         return
 
-    # Удаляем пользователя из списка ожидающих
+    if not storage["rooms"]:
+        await callback.answer("Сначала создайте комнаты командой /newroom.", show_alert=True)
+        return
+
+    await callback.message.edit_reply_markup(reply_markup=get_room_keyboard(announcement_id))
+    await callback.answer("Выберите комнату для сохранения объявления.")
+
+
+@dp.callback_query(F.data.startswith("selectroom_"))
+async def select_room(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Только администратор может выбирать комнату.", show_alert=True)
+        return
+
+    data = callback.data.split("_", 2)
+    if len(data) != 3:
+        await callback.answer("Неверные данные.", show_alert=True)
+        return
+
+    announcement_id = int(data[1])
+    room_name = data[2]
+    announcement = find_announcement_by_id(announcement_id)
+    if not announcement or announcement["status"] != "pending":
+        await callback.answer("Эта заявка уже обработана.", show_alert=True)
+        await callback.message.edit_reply_markup(reply_markup=None)
+        return
+
+    if room_name not in storage["rooms"]:
+        await callback.answer("Комната не найдена.", show_alert=True)
+        return
+
+    announcement["status"] = "approved"
+    announcement["room"] = room_name
+    announcement["approved_at"] = datetime.utcnow().isoformat(sep=" ", timespec="seconds")
+    announcement["admin_id"] = callback.from_user.id
+    save_storage()
+
+    user_id = announcement["user_id"]
     pending_users.discard(user_id)
+    announcement_index.pop(user_id, None)
 
-    # Достаем оригинальное описание, убирая приписку "Новый лот от..."
-    original_caption = callback.message.caption.split("\n\n", 1)[-1]
-
-    # Публикуем в группу
-    await bot.send_photo(
-        chat_id=GROUP_ID,
-        message_thread_id=THREAD_ID,
-        photo=callback.message.photo[-1].file_id,
-        caption=original_caption
-    )
-    
-    # Уведомляем пользователя
     try:
-        await bot.send_message(user_id, "🎉 Твой лот прошел модерацию и опубликован в группе!")
+        await bot.send_message(user_id, f"🎉 Твое объявление одобрено и сохранено в комнате '{room_name}'.")
     except Exception as e:
         logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
-    # Обновляем сообщение администратора (убираем кнопки)
+    try:
+        await bot.send_photo(
+            chat_id=GROUP_ID,
+            message_thread_id=THREAD_ID,
+            photo=announcement["photo_file_id"],
+            caption=announcement["caption"]
+        )
+    except Exception as e:
+        logging.error(f"Не удалось опубликовать объявление в группе: {e}")
+
     await callback.message.edit_caption(
-        caption=f"{callback.message.caption}\n\n<b>[✅ ОДОБРЕНО И ОПУБЛИКОВАНО]</b>",
+        caption=f"{callback.message.caption}\n\n<b>[✅ ОДОБРЕНО В КОМНАТУ {room_name}]</b>",
         reply_markup=None,
         parse_mode="HTML"
     )
-    await callback.answer()
+    await callback.answer(f"Объявление сохранено в комнате '{room_name}'.")
 
-# Обработчик нажатия кнопки "Отклонить"
+
 @dp.callback_query(F.data.startswith("reject_"))
 async def reject_lot(callback: types.CallbackQuery):
-    user_id = int(callback.data.split("_")[1])
-    
-    # Проверяем, не обработал ли уже другой админ
-    if user_id not in pending_users:
-        await callback.answer("Эта заявка уже обработана другим администратором!", show_alert=True)
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Только администратор может отклонять объявления.", show_alert=True)
+        return
+
+    announcement_id = int(callback.data.split("_")[1])
+    announcement = find_announcement_by_id(announcement_id)
+    if not announcement or announcement["status"] != "pending":
+        await callback.answer("Эта заявка уже обработана.", show_alert=True)
         await callback.message.edit_reply_markup(reply_markup=None)
         return
 
-    # Удаляем пользователя из списка ожидающих
-    pending_users.discard(user_id)
+    announcement["status"] = "rejected"
+    save_storage()
 
-    # Уведомляем пользователя
+    user_id = announcement["user_id"]
+    pending_users.discard(user_id)
+    announcement_index.pop(user_id, None)
+
     try:
-        await bot.send_message(user_id, "😔 К сожалению, твой лот не прошел модерацию.")
+        await bot.send_message(user_id, "😔 К сожалению, твое объявление не прошло модерацию.")
     except Exception as e:
         logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
-    # Обновляем сообщение администратора
     await callback.message.edit_caption(
         caption=f"{callback.message.caption}\n\n<b>[❌ ОТКЛОНЕНО]</b>",
         reply_markup=None,
@@ -139,22 +404,24 @@ async def reject_lot(callback: types.CallbackQuery):
     )
     await callback.answer()
 
-# Обработчик, если прислали текст без фото или фото без текста
+
 @dp.message(~F.photo | ~F.caption, F.chat.type == "private")
 async def handle_invalid_submission(message: types.Message):
     user_id = message.from_user.id
     if user_id in pending_users:
-        await message.answer("Пожалуйста, дождись решения администратора по твоей предыдущей заявке.")
+        await message.answer("Пожалуйста, дождись решения администратора по твоей предыдущей заявке.", reply_markup=get_main_menu(user_id))
     elif message.text != "/start":
         await message.answer(
-            "Пожалуйста, отправь картинку и описание лота *одним сообщением* "
-            "(прикрепи фото и добавь к нему текст).",
-            parse_mode="Markdown"
+            "Пожалуйста, отправь картинку и описание лота одним сообщением (прикрепи фото и добавь к нему текст).",
+            reply_markup=get_main_menu(user_id)
         )
 
+
 async def main():
+    load_storage()
     logging.basicConfig(level=logging.INFO)
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     try:
