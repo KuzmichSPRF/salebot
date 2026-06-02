@@ -460,9 +460,8 @@ async def my_ads(message: types.Message):
         await message.answer("У тебя еще нет объявлений.", reply_markup=get_main_menu(user_id))
         return
 
-    lines = ["Твои объявления:"]
-    builder = InlineKeyboardBuilder()
-    has_active = False
+    await message.answer("📬 <b>Твои объявления:</b>", parse_mode="HTML")
+
     for item in user_items:
         room = item.get("room", "—")
         status_ru = {
@@ -473,16 +472,28 @@ async def my_ads(message: types.Message):
             "cancelled": "🚫 Отменено", 
             "deleted": "🗑 Удалено"
         }.get(item["status"], item["status"])
-        lines.append(f"ID {item['id']}: {status_ru} в комнате {room}")
+        
+        caption = (
+            f"📌 ID: {item['id']}\n"
+            f"🏷️ Статус: {status_ru}\n"
+            f"📂 Комната: {room}\n"
+            f"🕒 Добавлено: {item.get('created_at', '—')}\n\n"
+            f"Описание:\n{item['caption']}"
+        )
+
+        builder = InlineKeyboardBuilder()
         if item["status"] in ["pending", "approved"]:
-            builder.button(text=f"🗑 Удалить ID {item['id']}", callback_data=f"userdeletead_{item['id']}")
-            has_active = True
+            builder.button(text="🗑 Удалить", callback_data=f"userdeletead_{item['id']}")
             
-    if has_active:
-        builder.adjust(1)
-        await message.answer("\n".join(lines), reply_markup=builder.as_markup())
-    else:
-        await message.answer("\n".join(lines), reply_markup=get_main_menu(user_id))
+        reply_markup = builder.as_markup() if item["status"] in ["pending", "approved"] else None
+        
+        await bot.send_photo(
+            chat_id=user_id,
+            photo=item["photo_file_id"],
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
 
 
 @dp.callback_query(F.data.startswith("openroom:"))
@@ -851,31 +862,11 @@ async def user_delete_ad(callback: types.CallbackQuery):
     
     await callback.answer("Объявление успешно удалено.", show_alert=True)
     
-    user_id = callback.from_user.id
-    user_items = [item for item in storage["announcements"] if item["user_id"] == user_id]
-    lines = ["Твои объявления:"]
-    builder = InlineKeyboardBuilder()
-    has_active = False
-    for item in user_items:
-        room = item.get("room", "—")
-        status_ru = {
-            "draft": "📝 Черновик", 
-            "pending": "⏳ На модерации", 
-            "approved": "✅ Одобрено", 
-            "rejected": "❌ Отклонено", 
-            "cancelled": "🚫 Отменено", 
-            "deleted": "🗑 Удалено"
-        }.get(item["status"], item["status"])
-        lines.append(f"ID {item['id']}: {status_ru} в комнате {room}")
-        if item["status"] in ["pending", "approved"]:
-            builder.button(text=f"🗑 Удалить ID {item['id']}", callback_data=f"userdeletead_{item['id']}")
-            has_active = True
-            
-    if has_active:
-        builder.adjust(1)
-        await callback.message.edit_text("\n".join(lines), reply_markup=builder.as_markup())
-    else:
-        await callback.message.edit_text("\n".join(lines), reply_markup=None)
+    await callback.message.edit_caption(
+        caption=f"{callback.message.caption}\n\n<b>[🗑 УДАЛЕНО ВЛАДЕЛЬЦЕМ]</b>",
+        reply_markup=None,
+        parse_mode="HTML"
+    )
 
 
 @dp.message(~F.photo | ~F.caption, F.chat.type == "private")
