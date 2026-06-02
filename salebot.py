@@ -461,10 +461,28 @@ async def my_ads(message: types.Message):
         return
 
     lines = ["Твои объявления:"]
+    builder = InlineKeyboardBuilder()
+    has_active = False
     for item in user_items:
         room = item.get("room", "—")
-        lines.append(f"ID {item['id']}: {item['status']} в комнате {room}")
-    await message.answer("\n".join(lines), reply_markup=get_main_menu(user_id))
+        status_ru = {
+            "draft": "📝 Черновик", 
+            "pending": "⏳ На модерации", 
+            "approved": "✅ Одобрено", 
+            "rejected": "❌ Отклонено", 
+            "cancelled": "🚫 Отменено", 
+            "deleted": "🗑 Удалено"
+        }.get(item["status"], item["status"])
+        lines.append(f"ID {item['id']}: {status_ru} в комнате {room}")
+        if item["status"] in ["pending", "approved"]:
+            builder.button(text=f"🗑 Удалить ID {item['id']}", callback_data=f"userdeletead_{item['id']}")
+            has_active = True
+            
+    if has_active:
+        builder.adjust(1)
+        await message.answer("\n".join(lines), reply_markup=builder.as_markup())
+    else:
+        await message.answer("\n".join(lines), reply_markup=get_main_menu(user_id))
 
 
 @dp.callback_query(F.data.startswith("openroom:"))
@@ -517,7 +535,8 @@ async def handle_lot_submission(message: types.Message):
         "room": None,
         "created_at": datetime.utcnow().isoformat(sep=" ", timespec="seconds"),
         "approved_at": None,
-        "admin_id": None
+        "admin_id": None,
+        "published_messages": []
     }
 
     storage["announcements"].append(announcement)
@@ -635,14 +654,19 @@ async def approve_lot(callback: types.CallbackQuery):
         groups = [{"chat_id": GROUP_ID, "thread_id": THREAD_ID}]
 
     published_count = 0
+    announcement["published_messages"] = []
     for grp in groups:
         try:
-            await bot.send_photo(
+            msg = await bot.send_photo(
                 chat_id=grp["chat_id"],
                 message_thread_id=grp.get("thread_id"),
                 photo=announcement["photo_file_id"],
                 caption=announcement["caption"]
             )
+            announcement["published_messages"].append({
+                "chat_id": grp["chat_id"],
+                "message_id": msg.message_id
+            })
             published_count += 1
         except Exception as e:
             logging.error(f"Не удалось опубликовать объявление в группе {grp.get('chat_id')}: {e}")
@@ -780,6 +804,13 @@ async def delete_ad(callback: types.CallbackQuery):
         await callback.message.edit_reply_markup(reply_markup=None)
         return
 
+    if "published_messages" in announcement:
+        for pub_msg in announcement["published_messages"]:
+            try:
+                await bot.delete_message(chat_id=pub_msg["chat_id"], message_id=pub_msg["message_id"])
+            except Exception as e:
+                logging.error(f"Не удалось удалить сообщение {pub_msg['message_id']} из чата {pub_msg['chat_id']}: {e}")
+
     announcement["status"] = "deleted"
     save_storage()
     
@@ -788,7 +819,63 @@ async def delete_ad(callback: types.CallbackQuery):
         reply_markup=None,
         parse_mode="HTML"
     )
-    await callback.answer("Объявление удалено из базы.")
+    await callback.answer("Объявление удалено из базы и групп.")
+
+
+@dp.callback_query(F.data.startswith("userdeletead_"))
+async def user_delete_ad(callback: types.CallbackQuery):
+    ad_id = int(callback.data.split("_")[1])
+    announcement = find_announcement_by_id(ad_id)
+    
+    if not announcement or announcement["user_id"] != callback.from_user.id:
+        await callback.answer("Объявление не найдено.", show_alert=True)
+        return
+        
+    if announcement["status"] not in ["pending", "approved"]:
+        await callback.answer("Это объявление уже нельзя удалить.", show_alert=True)
+        return
+
+    if announcement["status"] == "approved" and "published_messages" in announcement:
+        for pub_msg in announcement["published_messages"]:
+            try:
+                await bot.delete_message(chat_id=pub_msg["chat_id"], message_id=pub_msg["message_id"])
+            except Exception as e:
+                logging.error(f"Не удалось удалить сообщение {pub_msg['message_id']} из чата {pub_msg['chat_id']}: {e}")
+
+    if announcement["status"] == "pending":
+        pending_users.discard(announcement["user_id"])
+        announcement_index.pop(announcement["user_id"], None)
+
+    announcement["status"] = "deleted"
+    save_storage()
+    
+    await callback.answer("Объявление успешно удалено.", show_alert=True)
+    
+    user_id = callback.from_user.id
+    user_items = [item for item in storage["announcements"] if item["user_id"] == user_id]
+    lines = ["Твои объявления:"]
+    builder = InlineKeyboardBuilder()
+    has_active = False
+    for item in user_items:
+        room = item.get("room", "—")
+        status_ru = {
+            "draft": "📝 Черновик", 
+            "pending": "⏳ На модерации", 
+            "approved": "✅ Одобрено", 
+            "rejected": "❌ Отклонено", 
+            "cancelled": "🚫 Отменено", 
+            "deleted": "🗑 Удалено"
+        }.get(item["status"], item["status"])
+        lines.append(f"ID {item['id']}: {status_ru} в комнате {room}")
+        if item["status"] in ["pending", "approved"]:
+            builder.button(text=f"🗑 Удалить ID {item['id']}", callback_data=f"userdeletead_{item['id']}")
+            has_active = True
+            
+    if has_active:
+        builder.adjust(1)
+        await callback.message.edit_text("\n".join(lines), reply_markup=builder.as_markup())
+    else:
+        await callback.message.edit_text("\n".join(lines), reply_markup=None)
 
 
 @dp.message(~F.photo | ~F.caption, F.chat.type == "private")
