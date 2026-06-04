@@ -99,6 +99,25 @@ def get_admin_ad_keyboard(announcement_id: int):
     builder.button(text="🗑 Удалить", callback_data=f"deletead_{announcement_id}")
     return builder.as_markup()
 
+def get_group_rooms_keyboard(group_idx: int):
+    builder = InlineKeyboardBuilder()
+    groups = storage.get("publish_groups", [])
+    if not (0 <= group_idx < len(groups)):
+        return builder.as_markup()
+    
+    group = groups[group_idx]
+    selected_rooms = group.get("rooms", [])
+    
+    for r_idx, room_name in enumerate(storage["rooms"]):
+        marker = "✅ " if room_name in selected_rooms else "🔲 "
+        builder.button(
+            text=f"{marker}{room_name}", 
+            callback_data=f"grproom_{group_idx}_{r_idx}"
+        )
+    builder.button(text="💾 Сохранить", callback_data=f"savegrprooms_{group_idx}")
+    builder.adjust(1)
+    return builder.as_markup()
+
 
 def format_room_list() -> str:
     if not storage["rooms"]:
@@ -243,6 +262,11 @@ async def edit_room(message: types.Message):
     for ann in storage["announcements"]:
         if ann.get("room") == old_name:
             ann["room"] = new_name
+            
+    for grp in storage.get("publish_groups", []):
+        if "rooms" in grp and old_name in grp["rooms"]:
+            grp["rooms"].remove(old_name)
+            grp["rooms"].append(new_name)
 
     save_storage()
     await message.answer(f"Комната '{old_name}' успешно переименована в '{new_name}'.", reply_markup=get_main_menu(message.from_user.id))
@@ -264,6 +288,10 @@ async def del_room(message: types.Message):
         return
 
     storage["rooms"].remove(room_name)
+    for grp in storage.get("publish_groups", []):
+        if "rooms" in grp and room_name in grp["rooms"]:
+            grp["rooms"].remove(room_name)
+            
     save_storage()
     await message.answer(f"Комната '{room_name}' успешно удалена.", reply_markup=get_main_menu(message.from_user.id))
 
@@ -305,10 +333,16 @@ async def add_publish_group(message: types.Message):
     storage["publish_groups"].append({
         "chat_id": chat_id,
         "thread_id": thread_id,
-        "name": name
+        "name": name,
+        "rooms": []
     })
     save_storage()
-    await message.answer(f"✅ Чат '{name}' успешно добавлен для публикаций!")
+    group_idx = len(storage["publish_groups"]) - 1
+    await message.answer(
+        f"✅ Чат '{name}' успешно добавлен для публикаций!\n"
+        "Выберите комнаты, из которых сюда будут публиковаться объявления:",
+        reply_markup=get_group_rooms_keyboard(group_idx)
+    )
 
     admin_name = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
     for admin_id in ADMIN_IDS:
@@ -369,11 +403,12 @@ async def list_publish_groups(message: types.Message):
     builder = InlineKeyboardBuilder()
     for i, g in enumerate(groups):
         thread_info = f" (Ветка: {g.get('thread_id')})" if g.get("thread_id") else ""
-        builder.button(text=f"❌ Удалить {g.get('name')}{thread_info}", callback_data=f"delgroup_{i}")
-    builder.adjust(1)
+        builder.button(text=f"⚙️ Настроить {g.get('name')}{thread_info}", callback_data=f"editgrp_{i}")
+        builder.button(text=f"❌ Удалить", callback_data=f"delgroup_{i}")
+    builder.adjust(2)
 
     await message.answer(
-        "📢 <b>Группы для публикаций:</b>\nНажми на кнопку, чтобы удалить группу из рассылки.",
+        "📢 <b>Группы для публикаций:</b>\nВыбери группу для настройки комнат или нажми ❌ для удаления.",
         parse_mode="HTML",
         reply_markup=builder.as_markup()
     )
@@ -400,15 +435,100 @@ async def callback_del_group(callback: types.CallbackQuery):
             builder = InlineKeyboardBuilder()
             for i, g in enumerate(groups):
                 thread_info = f" (Ветка: {g.get('thread_id')})" if g.get("thread_id") else ""
-                builder.button(text=f"❌ Удалить {g.get('name')}{thread_info}", callback_data=f"delgroup_{i}")
-            builder.adjust(1)
+                builder.button(text=f"⚙️ Настроить {g.get('name')}{thread_info}", callback_data=f"editgrp_{i}")
+                builder.button(text=f"❌ Удалить", callback_data=f"delgroup_{i}")
+            builder.adjust(2)
             await callback.message.edit_text(
-                "📢 <b>Группы для публикаций:</b>\nНажми на кнопку, чтобы удалить группу из рассылки.",
+                "📢 <b>Группы для публикаций:</b>\nВыбери группу для настройки комнат или нажми ❌ для удаления.",
                 parse_mode="HTML",
                 reply_markup=builder.as_markup()
             )
     else:
         await callback.answer("Группа не найдена или уже удалена.", show_alert=True)
+
+
+@dp.callback_query(F.data.startswith("grproom_"))
+async def toggle_group_room(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Только администратор может настраивать комнаты.", show_alert=True)
+        return
+
+    parts = callback.data.split("_")
+    if len(parts) != 3:
+        return
+        
+    group_idx = int(parts[1])
+    r_idx = int(parts[2])
+    
+    groups = storage.get("publish_groups", [])
+    if not (0 <= group_idx < len(groups)):
+        await callback.answer("Группа не найдена.", show_alert=True)
+        return
+        
+    group = groups[group_idx]
+    if "rooms" not in group:
+        group["rooms"] = []
+        
+    rooms_list = storage.get("rooms", [])
+    if not (0 <= r_idx < len(rooms_list)):
+        await callback.answer("Комната не найдена.", show_alert=True)
+        return
+        
+    room_name = rooms_list[r_idx]
+    
+    if room_name in group["rooms"]:
+        group["rooms"].remove(room_name)
+    else:
+        group["rooms"].append(room_name)
+        
+    save_storage()
+    
+    await callback.message.edit_reply_markup(reply_markup=get_group_rooms_keyboard(group_idx))
+
+
+@dp.callback_query(F.data.startswith("savegrprooms_"))
+async def save_group_rooms(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Только администратор может настраивать комнаты.", show_alert=True)
+        return
+
+    parts = callback.data.split("_")
+    group_idx = int(parts[1])
+    
+    groups = storage.get("publish_groups", [])
+    if not (0 <= group_idx < len(groups)):
+        await callback.message.edit_text("Группа не найдена или была удалена.")
+        return
+        
+    group = groups[group_idx]
+    selected = group.get("rooms", [])
+    
+    if not selected:
+        rooms_text = "Ни одной комнаты не выбрано. Объявления сюда приходить не будут."
+    else:
+        rooms_text = "Выбранные комнаты:\n" + "\n".join(f"• {r}" for r in selected)
+        
+    await callback.message.edit_text(f"✅ Настройка комнат для чата <b>{group.get('name')}</b> сохранена.\n\n{rooms_text}", parse_mode="HTML")
+
+
+@dp.callback_query(F.data.startswith("editgrp_"))
+async def edit_group_rooms(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Только администратор может настраивать комнаты.", show_alert=True)
+        return
+    idx = int(callback.data.split("_")[1])
+    groups = storage.get("publish_groups", [])
+    if not (0 <= idx < len(groups)):
+        await callback.answer("Группа не найдена.", show_alert=True)
+        return
+    
+    group = groups[idx]
+    await callback.message.edit_text(
+        f"⚙️ Настройка комнат для чата <b>{group.get('name')}</b>:\n"
+        "Выберите комнаты, из которых в этот чат будут приходить объявления:",
+        reply_markup=get_group_rooms_keyboard(idx),
+        parse_mode="HTML"
+    )
 
 
 @dp.message((F.text == "/rooms") | (F.text == "🏠 Комнаты"), F.chat.type == "private")
@@ -667,6 +787,9 @@ async def approve_lot(callback: types.CallbackQuery):
     published_count = 0
     announcement["published_messages"] = []
     for grp in groups:
+        if "rooms" in grp and room_name not in grp["rooms"]:
+            continue
+            
         try:
             msg = await bot.send_photo(
                 chat_id=grp["chat_id"],
