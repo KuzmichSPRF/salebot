@@ -1,10 +1,14 @@
 import asyncio
+import html
 import json
 import logging
 import os
+import tempfile
+import time
+from typing import Any, Awaitable, Callable, Dict
 from datetime import datetime
 from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher, F, types
+from aiogram import Bot, Dispatcher, F, types, BaseMiddleware
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -27,6 +31,30 @@ dp = Dispatcher()
 
 class AdminReject(StatesGroup):
     waiting_for_reason = State()
+
+
+class ThrottlingMiddleware(BaseMiddleware):
+    def __init__(self, limit: float = 1.0):
+        self.limit = limit
+        self.users: Dict[int, float] = {}
+
+    async def __call__(
+        self,
+        handler: Callable[[types.Message, Dict[str, Any]], Awaitable[Any]],
+        event: types.Message,
+        data: Dict[str, Any]
+    ) -> Any:
+        if not event.from_user:
+            return await handler(event, data)
+            
+        user_id = event.from_user.id
+        now = time.time()
+        
+        if now - self.users.get(user_id, 0.0) < self.limit:
+            return
+            
+        self.users[user_id] = now
+        return await handler(event, data)
 
 pending_users = set()
 announcement_index = {}
@@ -91,14 +119,26 @@ def load_storage():
         
     if "room_admins" not in storage:
         storage["room_admins"] = {}
+        
+    # Восстанавливаем pending_users, чтобы после рестарта бота 
+    # злоумышленники не могли заспамить БД незавершенными черновиками
+    for item in storage.get("announcements", []):
+        if item.get("status") in ("draft", "pending"):
+            pending_users.add(item["user_id"])
 
 
 def save_storage():
     try:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
+        # Атомарное сохранение через временный файл предотвращает 
+        # повреждение storage.json при одновременной записи
+        fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(DATA_FILE), prefix="storage_", suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(storage, f, ensure_ascii=False, indent=2)
+        os.replace(temp_path, DATA_FILE)
     except Exception as e:
         logging.error(f"Ошибка сохранения storage.json: {e}")
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 def normalize_room(name: str) -> str:
@@ -152,7 +192,7 @@ def format_room_list() -> str:
 
 def format_announcement(item: dict) -> str:
     created = item.get("created_at", "—")
-    owner = item.get("username", f"ID:{item.get('user_id')}")
+    owner = html.escape(item.get("username", f"ID:{item.get('user_id')}"))
     status = item.get("status", "unknown")
     room = item.get("room", "—")
     return (
@@ -161,7 +201,7 @@ def format_announcement(item: dict) -> str:
         f"🕒 Добавлено: {created}\n"
         f"🏷️ Статус: {status}\n"
         f"📂 Комната: {room}\n"
-        f"Описание: {item['caption']}"
+        f"Описание: {html.escape(item['caption'])}"
     )
 
 
@@ -173,8 +213,8 @@ def find_announcement_by_id(announcement_id: int):
 
 
 def build_admin_caption(message: types.Message) -> str:
-    username = f"@{message.from_user.username}" if message.from_user.username else f"ID: {message.from_user.id}"
-    return f"Новый лот от {username}:\n\n{message.caption}"
+    username = html.escape(f"@{message.from_user.username}" if message.from_user.username else f"ID: {message.from_user.id}")
+    return f"Новый лот от {username}:\n\n{html.escape(message.caption)}"
 
 
 @dp.message(CommandStart(), F.chat.type == "private")
@@ -463,7 +503,7 @@ async def add_publish_group(message: types.Message):
             try:
                 await bot.send_message(
                     chat_id=admin_id,
-                    text=f"📢 Администратор {admin_name} добавил новый чат для публикаций: <b>{name}</b>",
+                    text=f"📢 Администратор {html.escape(admin_name)} добавил новый чат для публикаций: <b>{html.escape(name)}</b>",
                     parse_mode="HTML"
                 )
             except Exception as e:
@@ -711,7 +751,7 @@ async def my_ads(message: types.Message):
             f"🏷️ Статус: {status_ru}\n"
             f"📂 Комната: {room}\n"
             f"🕒 Добавлено: {item.get('created_at', '—')}\n\n"
-            f"Описание:\n{item['caption']}"
+            f"Описание:\n{html.escape(item['caption'])}"
         )
 
         builder = InlineKeyboardBuilder()
@@ -765,7 +805,7 @@ async def handle_lot_submission(message: types.Message):
         await message.answer("В данный момент нет доступных комнат для публикации.")
         return
 
-    announcement_id = len(storage["announcements"]) + 1
+    announcement_id = max((item["id"] for item in storage["announcements"]), default=0) + 1
     caption = message.caption.strip()
     username = f"@{message.from_user.username}" if message.from_user.username else f"ID: {user_id}"
 
@@ -847,7 +887,7 @@ async def user_select_room(callback: types.CallbackQuery):
     builder.button(text="❌ Отклонить", callback_data=f"reject_{announcement_id}")
     builder.adjust(2)
 
-    admin_caption = f"Новый лот от {announcement['username']} в комнату <b>{room_name}</b>:\n\n{announcement['caption']}"
+    admin_caption = f"Новый лот от {html.escape(announcement['username'])} в комнату <b>{html.escape(room_name)}</b>:\n\n{html.escape(announcement['caption'])}"
     notify_admins = set(ADMIN_IDS)
     if "room_admins" in storage and room_name in storage["room_admins"]:
         notify_admins.update(storage["room_admins"][room_name])
@@ -981,7 +1021,7 @@ async def finalize_rejection(announcement_id: int, admin_chat_id: int, admin_msg
 
     msg_text = "😔 К сожалению, твое объявление не прошло модерацию."
     if reason:
-        msg_text += f"\n\n<b>Причина отказа:</b> {reason}"
+        msg_text += f"\n\n<b>Причина отказа:</b> {html.escape(reason)}"
 
     try:
         await bot.send_message(user_id, msg_text, parse_mode="HTML")
@@ -992,7 +1032,7 @@ async def finalize_rejection(announcement_id: int, admin_chat_id: int, admin_msg
         await bot.edit_message_caption(
             chat_id=admin_chat_id,
             message_id=admin_msg_id,
-            caption=f"{orig_caption}\n\n<b>[❌ ОТКЛОНЕНО]</b>" + (f"\nПричина: {reason}" if reason else ""),
+            caption=f"{orig_caption}\n\n<b>[❌ ОТКЛОНЕНО]</b>" + (f"\nПричина: {html.escape(reason)}" if reason else ""),
             reply_markup=None,
             parse_mode="HTML"
         )
@@ -1127,6 +1167,7 @@ async def handle_invalid_submission(message: types.Message):
 async def main():
     load_storage()
     logging.basicConfig(level=logging.INFO)
+    dp.message.middleware(ThrottlingMiddleware(limit=1.0))
     await dp.start_polling(bot)
 
 
