@@ -37,14 +37,32 @@ storage = {
 }
 
 
+def is_main_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+
+def is_room_admin(user_id: int, room_name: str) -> bool:
+    if not room_name:
+        return is_main_admin(user_id)
+    return is_main_admin(user_id) or user_id in storage.get("room_admins", {}).get(room_name, [])
+
+
+def is_any_admin(user_id: int) -> bool:
+    if is_main_admin(user_id):
+        return True
+    return any(user_id in admins for admins in storage.get("room_admins", {}).values())
+
+
 def get_main_menu(user_id: int = None) -> types.ReplyKeyboardMarkup:
     buttons = [
         [types.KeyboardButton(text="🏠 Комнаты")],
         [types.KeyboardButton(text="📬 Мои объявления")],
     ]
-    if user_id in ADMIN_IDS:
-        buttons.append([types.KeyboardButton(text="🛠 Управление комнатами"), types.KeyboardButton(text="📖 Инструкция")])
-    buttons.append([types.KeyboardButton(text="� Главное меню")])
+    if is_main_admin(user_id):
+        buttons.append([types.KeyboardButton(text="🛠 Управление комнатами")])
+    if is_any_admin(user_id):
+        buttons.append([types.KeyboardButton(text="📖 Инструкция")])
+    buttons.append([types.KeyboardButton(text="🔄 Главное меню")])
     return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True, one_time_keyboard=False)
 
 
@@ -70,6 +88,9 @@ def load_storage():
                 "name": "Основная группа (из .env)"
             })
         save_storage()
+        
+    if "room_admins" not in storage:
+        storage["room_admins"] = {}
 
 
 def save_storage():
@@ -175,7 +196,7 @@ async def main_menu(message: types.Message):
 
 @dp.message(F.text == "📖 Инструкция", F.chat.type == "private")
 async def admin_instruction(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+    if not is_any_admin(message.from_user.id):
         return
         
     file_path = os.path.join(os.path.dirname(__file__), "admin_guide.txt")
@@ -193,7 +214,7 @@ async def admin_instruction(message: types.Message):
 
 @dp.message(F.text == "🛠 Управление комнатами", F.chat.type == "private")
 async def prompt_room_management(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+    if not is_main_admin(message.from_user.id):
         await message.answer("Только администратор может управлять комнатами.", reply_markup=get_main_menu(message.from_user.id))
         return
     await message.answer(
@@ -201,6 +222,10 @@ async def prompt_room_management(message: types.Message):
         "➕ <b>Создать:</b> <code>/newroom Название</code>\n"
         "✏️ <b>Изменить:</b> <code>/editroom Старое_имя | Новое_имя</code>\n"
         "❌ <b>Удалить:</b> <code>/delroom Название</code>\n\n"
+        "👤 <b>Админы комнат:</b>\n"
+        "➕ <b>Назначить:</b> <code>/assignadmin ID Название_комнаты</code>\n"
+        "➖ <b>Разжаловать:</b> <code>/revokeadmin ID Название_комнаты</code>\n"
+        "📋 <b>Список админов:</b> <code>/adminlist</code>\n\n"
         "📢 <b>Публикация:</b>\n"
         "📋 <b>Список чатов:</b> <code>/groups</code>\n"
         "➕ <b>Добавить чат:</b> напиши <code>/addgroup</code> в самой группе ИЛИ отправь боту <code>/addgroup ID_чата Название</code>",
@@ -267,6 +292,9 @@ async def edit_room(message: types.Message):
         if "rooms" in grp and old_name in grp["rooms"]:
             grp["rooms"].remove(old_name)
             grp["rooms"].append(new_name)
+            
+    if old_name in storage.get("room_admins", {}):
+        storage["room_admins"][new_name] = storage["room_admins"].pop(old_name)
 
     save_storage()
     await message.answer(f"Комната '{old_name}' успешно переименована в '{new_name}'.", reply_markup=get_main_menu(message.from_user.id))
@@ -292,9 +320,94 @@ async def del_room(message: types.Message):
         if "rooms" in grp and room_name in grp["rooms"]:
             grp["rooms"].remove(room_name)
             
+    storage.get("room_admins", {}).pop(room_name, None)
+            
     save_storage()
     await message.answer(f"Комната '{room_name}' успешно удалена.", reply_markup=get_main_menu(message.from_user.id))
 
+
+@dp.message(F.text.startswith("/assignadmin"), F.chat.type == "private")
+async def assign_admin(message: types.Message):
+    if not is_main_admin(message.from_user.id):
+        return
+        
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer("Использование: /assignadmin ID_пользователя Название_комнаты")
+        return
+        
+    try:
+        new_admin_id = int(parts[1])
+    except ValueError:
+        await message.answer("ID пользователя должен быть числом.")
+        return
+        
+    room_name = normalize_room(parts[2])
+    if room_name not in storage["rooms"]:
+        await message.answer(f"Комната '{room_name}' не найдена.")
+        return
+        
+    if "room_admins" not in storage:
+        storage["room_admins"] = {}
+        
+    if room_name not in storage["room_admins"]:
+        storage["room_admins"][room_name] = []
+        
+    if new_admin_id in storage["room_admins"][room_name]:
+        await message.answer("Этот пользователь уже является администратором данной комнаты.")
+        return
+        
+    storage["room_admins"][room_name].append(new_admin_id)
+    save_storage()
+    await message.answer(f"✅ Пользователь {new_admin_id} назначен модератором комнаты '{room_name}'.")
+
+
+@dp.message(F.text.startswith("/revokeadmin"), F.chat.type == "private")
+async def revoke_admin(message: types.Message):
+    if not is_main_admin(message.from_user.id):
+        return
+        
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer("Использование: /revokeadmin ID_пользователя Название_комнаты")
+        return
+        
+    try:
+        old_admin_id = int(parts[1])
+    except ValueError:
+        await message.answer("ID пользователя должен быть числом.")
+        return
+        
+    room_name = normalize_room(parts[2])
+    
+    if "room_admins" in storage and room_name in storage["room_admins"] and old_admin_id in storage["room_admins"][room_name]:
+        storage["room_admins"][room_name].remove(old_admin_id)
+        save_storage()
+        await message.answer(f"❌ Пользователь {old_admin_id} удалён из модераторов комнаты '{room_name}'.")
+    else:
+        await message.answer("Этот пользователь не является администратором указанной комнаты.")
+
+
+@dp.message(F.text == "/adminlist", F.chat.type == "private")
+async def admin_list(message: types.Message):
+    if not is_main_admin(message.from_user.id):
+        return
+        
+    lines = ["👑 <b>Главные администраторы (из .env):</b>"]
+    for aid in ADMIN_IDS:
+        lines.append(f"• {aid}")
+        
+    lines.append("\n👤 <b>Администраторы комнат:</b>")
+    has_room_admins = False
+    for room, admins in storage.get("room_admins", {}).items():
+        if admins:
+            has_room_admins = True
+            lines.append(f"\n📂 <b>{room}:</b>\n" + "\n".join(f"• {aid}" for aid in admins))
+            
+    if not has_room_admins:
+        lines.append("Нет назначенных администраторов комнат.")
+        
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
 @dp.message(F.text.startswith("/addgroup"))
 async def add_publish_group(message: types.Message):
@@ -562,7 +675,7 @@ async def show_room(message: types.Message):
 
     await message.answer(f"Объявления в комнате '{room_name}':")
     for item in items:
-        reply_markup = get_admin_ad_keyboard(item["id"]) if message.from_user.id in ADMIN_IDS else None
+        reply_markup = get_admin_ad_keyboard(item["id"]) if is_room_admin(message.from_user.id, room_name) else None
         await bot.send_photo(
             chat_id=message.from_user.id,
             photo=item["photo_file_id"],
@@ -631,7 +744,7 @@ async def open_room(callback: types.CallbackQuery):
     await callback.answer()
     await bot.send_message(callback.from_user.id, f"Объявления в комнате '{room_name}':")
     for item in items:
-        reply_markup = get_admin_ad_keyboard(item["id"]) if callback.from_user.id in ADMIN_IDS else None
+        reply_markup = get_admin_ad_keyboard(item["id"]) if is_room_admin(callback.from_user.id, room_name) else None
         await bot.send_photo(
             chat_id=callback.from_user.id,
             photo=item["photo_file_id"],
@@ -735,7 +848,11 @@ async def user_select_room(callback: types.CallbackQuery):
     builder.adjust(2)
 
     admin_caption = f"Новый лот от {announcement['username']} в комнату <b>{room_name}</b>:\n\n{announcement['caption']}"
-    for admin_id in ADMIN_IDS:
+    notify_admins = set(ADMIN_IDS)
+    if "room_admins" in storage and room_name in storage["room_admins"]:
+        notify_admins.update(storage["room_admins"][room_name])
+        
+    for admin_id in notify_admins:
         try:
             await bot.send_photo(
                 chat_id=admin_id,
@@ -750,18 +867,21 @@ async def user_select_room(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve_lot(callback: types.CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Только администратор может одобрять объявления.", show_alert=True)
-        return
-
     announcement_id = int(callback.data.split("_")[1])
     announcement = find_announcement_by_id(announcement_id)
-    if not announcement or announcement["status"] != "pending":
+    if not announcement:
+        await callback.answer("Объявление не найдено.", show_alert=True)
+        return
+        
+    room_name = announcement.get("room")
+    if not is_room_admin(callback.from_user.id, room_name):
+        await callback.answer("У вас нет прав на модерацию этой комнаты.", show_alert=True)
+        return
+
+    if announcement["status"] != "pending":
         await callback.answer("Эта заявка уже обработана.", show_alert=True)
         await callback.message.edit_reply_markup(reply_markup=None)
         return
-
-    room_name = announcement.get("room")
     if room_name not in storage["rooms"]:
         await callback.answer("Выбранная комната была удалена.", show_alert=True)
         return
@@ -815,15 +935,15 @@ async def approve_lot(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("reject_"))
 async def reject_lot_start(callback: types.CallbackQuery, state: FSMContext):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Только администратор может отклонять объявления.", show_alert=True)
-        return
-
     announcement_id = int(callback.data.split("_")[1])
     announcement = find_announcement_by_id(announcement_id)
     if not announcement or announcement["status"] != "pending":
         await callback.answer("Эта заявка уже обработана.", show_alert=True)
         await callback.message.edit_reply_markup(reply_markup=None)
+        return
+        
+    if not is_room_admin(callback.from_user.id, announcement.get("room")):
+        await callback.answer("У вас нет прав на модерацию этой комнаты.", show_alert=True)
         return
 
     await state.set_state(AdminReject.waiting_for_reason)
@@ -926,16 +1046,16 @@ async def reject_reason_callback(callback: types.CallbackQuery, state: FSMContex
 
 @dp.callback_query(F.data.startswith("deletead_"))
 async def delete_ad(callback: types.CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Только администратор может удалять объявления.", show_alert=True)
-        return
-
     ad_id = int(callback.data.split("_")[1])
     announcement = find_announcement_by_id(ad_id)
     
     if not announcement or announcement["status"] != "approved":
         await callback.answer("Объявление не найдено или уже удалено.", show_alert=True)
         await callback.message.edit_reply_markup(reply_markup=None)
+        return
+
+    if not is_room_admin(callback.from_user.id, announcement.get("room")):
+        await callback.answer("У вас нет прав на удаление в этой комнате.", show_alert=True)
         return
 
     if "published_messages" in announcement:
