@@ -393,7 +393,7 @@ async def admin_list(message: types.Message):
     if not is_main_admin(message.from_user.id):
         return
         
-    lines = ["👑 <b>Главные администраторы (из .env):</b>"]
+    lines = ["👑 <b>Главные администраторы:</b>"]
     for aid in ADMIN_IDS:
         lines.append(f"• {aid}")
         
