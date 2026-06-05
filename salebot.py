@@ -23,6 +23,7 @@ _group_id_env = os.getenv("GROUP_ID", "")
 GROUP_ID = int(_group_id_env) if _group_id_env.lstrip('-').isdigit() else _group_id_env
 THREAD_ID = int(os.getenv("THREAD_ID")) if os.getenv("THREAD_ID") else None
 DATA_FILE = os.path.join(os.path.dirname(__file__), "storage.json")
+DB_FILE = os.path.join(os.path.dirname(__file__), "salebot.db")
 # =============================================
 
 bot = Bot(token=BOT_TOKEN)
@@ -31,6 +32,24 @@ dp = Dispatcher()
 
 class AdminReject(StatesGroup):
     waiting_for_reason = State()
+
+def get_db():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    with get_db() as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS rooms (name TEXT PRIMARY KEY)")
+        # Если вы планируете переводить и остальное на БД:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS announcements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                status TEXT
+            )
+        """)
+        conn.commit()
 
 
 class ThrottlingMiddleware(BaseMiddleware):
@@ -158,9 +177,12 @@ def normalize_room(name: str) -> str:
 
 def get_user_room_keyboard(announcement_id: int):
     builder = InlineKeyboardBuilder()
-    for room_name in storage["rooms"]:
-        callback = f"userselectroom_{announcement_id}_{room_name}"
-        builder.button(text=room_name, callback_data=callback)
+    with get_db() as conn:
+        rooms = conn.execute("SELECT name FROM rooms").fetchall()
+        for row in rooms:
+            room_name = row["name"]
+            callback = f"userselectroom_{announcement_id}_{room_name}"
+            builder.button(text=room_name, callback_data=callback)
     builder.button(text="❌ Отменить", callback_data=f"usercancel_{announcement_id}")
     builder.adjust(1)
     return builder.as_markup()
@@ -192,13 +214,17 @@ def get_group_rooms_keyboard(group_idx: int):
 
 
 def format_room_list() -> str:
-    if not storage["rooms"]:
-        return "Пока нет комнат. Админ может создать комнату командой /newroom Название"
-    lines = ["💬 Доступные комнаты:"]
-    for idx, room_name in enumerate(storage["rooms"], 1):
-        count = sum(1 for item in storage["announcements"] if item["status"] == "approved" and item["room"] == room_name)
-        lines.append(f"{idx}. {room_name} — {count} объявлений")
-    return "\n".join(lines)
+    with get_db() as conn:
+        rooms = conn.execute("SELECT name FROM rooms").fetchall()
+        if not rooms:
+            return "Пока нет комнат. Админ может создать комнату командой /newroom Название"
+        
+        lines = ["💬 Доступные комнаты:"]
+        for idx, row in enumerate(rooms, 1):
+            room_name = row["name"]
+            count = sum(1 for item in storage["announcements"] if item["status"] == "approved" and item["room"] == room_name)
+            lines.append(f"{idx}. {room_name} — {count} объявлений")
+        return "\n".join(lines)
 
 
 def format_announcement(item: dict) -> str:
@@ -731,9 +757,11 @@ async def show_room(message: types.Message):
         return
 
     room_name = normalize_room(parts[1])
-    if room_name not in storage["rooms"]:
-        await message.answer(f"Комната '{room_name}' не найдена. Используй /rooms для списка комнат.", reply_markup=get_main_menu(message.from_user.id))
-        return
+    with get_db() as conn:
+        room_exists = conn.execute("SELECT 1 FROM rooms WHERE name = ?", (room_name,)).fetchone()
+        if not room_exists:
+            await message.answer(f"Комната '{room_name}' не найдена. Используй /rooms для списка комнат.", reply_markup=get_main_menu(message.from_user.id))
+            return
 
     items = [item for item in storage["announcements"] if item["status"] == "approved" and item["room"] == room_name]
     if not items:
@@ -808,9 +836,11 @@ async def my_ads(message: types.Message):
 @dp.callback_query(F.data.startswith("openroom:"))
 async def open_room(callback: types.CallbackQuery):
     room_name = callback.data.split(":", 1)[1]
-    if room_name not in storage["rooms"]:
-        await callback.answer("Комната не найдена.", show_alert=True)
-        return
+    with get_db() as conn:
+        room_exists = conn.execute("SELECT 1 FROM rooms WHERE name = ?", (room_name,)).fetchone()
+        if not room_exists:
+            await callback.answer("Комната не найдена.", show_alert=True)
+            return
 
     items = [item for item in storage["announcements"] if item["status"] == "approved" and item["room"] == room_name]
     if not items:
@@ -847,9 +877,11 @@ async def handle_lot_submission(message: types.Message):
         await message.answer("Пожалуйста, заверши текущую заявку (выбери комнату) или дождись решения администратора.")
         return
 
-    if not storage["rooms"]:
-        await message.answer("В данный момент нет доступных комнат для публикации.")
-        return
+    with get_db() as conn:
+        rooms_count = conn.execute("SELECT COUNT(*) FROM rooms").fetchone()[0]
+        if rooms_count == 0:
+            await message.answer("В данный момент нет доступных комнат для публикации.")
+            return
 
     announcement_id = max((item["id"] for item in storage["announcements"]), default=0) + 1
     caption = message.caption.strip()
@@ -918,9 +950,11 @@ async def user_select_room(callback: types.CallbackQuery):
         await callback.answer("Комната уже выбрана.", show_alert=True)
         return
 
-    if room_name not in storage["rooms"]:
-        await callback.answer("Комната не найдена.", show_alert=True)
-        return
+    with get_db() as conn:
+        room_exists = conn.execute("SELECT 1 FROM rooms WHERE name = ?", (room_name,)).fetchone()
+        if not room_exists:
+            await callback.answer("Комната не найдена.", show_alert=True)
+            return
 
     announcement["room"] = room_name
     announcement["status"] = "pending"
@@ -968,9 +1002,11 @@ async def approve_lot(callback: types.CallbackQuery):
         await callback.answer("Эта заявка уже обработана.", show_alert=True)
         await callback.message.edit_reply_markup(reply_markup=None)
         return
-    if room_name not in storage["rooms"]:
-        await callback.answer("Выбранная комната была удалена.", show_alert=True)
-        return
+    with get_db() as conn:
+        room_exists = conn.execute("SELECT 1 FROM rooms WHERE name = ?", (room_name,)).fetchone()
+        if not room_exists:
+            await callback.answer("Выбранная комната была удалена.", show_alert=True)
+            return
 
     announcement["status"] = "approved"
     announcement["approved_at"] = datetime.utcnow().isoformat(sep=" ", timespec="seconds")
@@ -1205,9 +1241,11 @@ async def clean_ghosts_cmd(message: types.Message):
     for ann in storage.get("announcements", []):
         # Если объявление одобрено, но комната была удалена или оно "битое"
         if ann["status"] == "approved":
-            if ann.get("room") not in storage["rooms"]:
-                ann["status"] = "deleted"
-                count += 1
+            with get_db() as conn:
+                room_exists = conn.execute("SELECT 1 FROM rooms WHERE name = ?", (ann.get("room"),)).fetchone()
+                if not room_exists:
+                    ann["status"] = "deleted"
+                    count += 1
     
     if count > 0:
         save_storage()
@@ -1264,6 +1302,7 @@ async def handle_invalid_submission(message: types.Message):
 
 
 async def main():
+    init_db()
     load_storage()
     logging.basicConfig(level=logging.INFO)
     dp.message.middleware(ThrottlingMiddleware(limit=1.0))
