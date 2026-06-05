@@ -32,3 +32,5 @@
 • Пользователь не может создать новую заявку, пока старая на модерации.
 
 📞 Контакты для связи: @kuzmichsprf
+
+💎 Поддержать проект: <a href="https://ton.app/pay/transfer/raccoon-times.ton?amount=0">raccoon-times.ton</a>

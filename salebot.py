@@ -372,7 +372,7 @@ async def admin_instruction(message: types.Message):
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 text = f.read()
-            await message.answer(text)
+            await message.answer(text, parse_mode="HTML")
         except Exception as e:
             logging.error(f"Ошибка при чтении инструкции: {e}")
             await message.answer("Произошла ошибка при загрузке инструкции.")
