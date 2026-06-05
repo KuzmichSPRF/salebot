@@ -3,8 +3,8 @@ import html
 import json
 import logging
 import os
-import tempfile
 import time 
+import sqlite3
 from typing import Any, Awaitable, Callable, Dict
 from datetime import datetime
 from dotenv import load_dotenv
@@ -216,13 +216,6 @@ def format_announcement(item: dict) -> str:
     )
 
 
-def find_announcement_by_id(announcement_id: int):
-    for item in storage["announcements"]:
-        if item["id"] == announcement_id:
-            return item
-    return None
-
-
 def build_admin_caption(message: types.Message) -> str:
     username = html.escape(f"@{message.from_user.username}" if message.from_user.username else f"ID: {message.from_user.id}")
     return f"Новый лот от {username}:\n\n{html.escape(message.caption)}"
@@ -305,13 +298,13 @@ async def add_room(message: types.Message):
         await message.answer("Название комнаты не может быть пустым.")
         return
 
-    if room_name in storage["rooms"]:
-        await message.answer(f"Комната '{room_name}' уже существует.", reply_markup=get_main_menu(message.from_user.id))
-        return
-
-    storage["rooms"].append(room_name)
-    save_storage()
-    await message.answer(f"Комната '{room_name}' успешно создана.", reply_markup=get_main_menu(message.from_user.id))
+    with get_db() as conn:
+        try:
+            conn.execute("INSERT INTO rooms (name) VALUES (?)", (room_name,))
+            conn.commit()
+            await message.answer(f"Комната '{room_name}' успешно создана.", reply_markup=get_main_menu(message.from_user.id))
+        except sqlite3.IntegrityError:
+            await message.answer(f"Комната '{room_name}' уже существует.", reply_markup=get_main_menu(message.from_user.id))
 
 
 @dp.message(F.text.startswith("/editroom"), F.chat.type == "private")
@@ -327,32 +320,22 @@ async def edit_room(message: types.Message):
         return
 
     old_name, new_name = parts[0], parts[1]
+    with get_db() as conn:
+        room_exists = conn.execute("SELECT 1 FROM rooms WHERE name = ?", (old_name,)).fetchone()
+        if not room_exists:
+            await message.answer(f"Комната '{old_name}' не найдена.")
+            return
 
-    if old_name not in storage["rooms"]:
-        await message.answer(f"Комната '{old_name}' не найдена.", reply_markup=get_main_menu(message.from_user.id))
-        return
-
-    if new_name in storage["rooms"]:
-        await message.answer(f"Комната '{new_name}' уже существует.", reply_markup=get_main_menu(message.from_user.id))
-        return
-
-    idx = storage["rooms"].index(old_name)
-    storage["rooms"][idx] = new_name
-
-    for ann in storage["announcements"]:
-        if ann.get("room") == old_name:
-            ann["room"] = new_name
-            
-    for grp in storage.get("publish_groups", []):
-        if "rooms" in grp and old_name in grp["rooms"]:
-            grp["rooms"].remove(old_name)
-            grp["rooms"].append(new_name)
-            
-    if old_name in storage.get("room_admins", {}):
-        storage["room_admins"][new_name] = storage["room_admins"].pop(old_name)
-
-    save_storage()
-    await message.answer(f"Комната '{old_name}' успешно переименована в '{new_name}'.", reply_markup=get_main_menu(message.from_user.id))
+        try:
+            conn.execute("INSERT INTO rooms (name) VALUES (?)", (new_name,))
+            conn.execute("UPDATE announcements SET room = ? WHERE room = ?", (new_name, old_name))
+            conn.execute("UPDATE group_rooms SET room_name = ? WHERE room_name = ?", (new_name, old_name))
+            conn.execute("UPDATE room_admins SET room_name = ? WHERE room_name = ?", (new_name, old_name))
+            conn.execute("DELETE FROM rooms WHERE name = ?", (old_name,))
+            conn.commit()
+            await message.answer(f"Комната '{old_name}' успешно переименована в '{new_name}'.", reply_markup=get_main_menu(message.from_user.id))
+        except sqlite3.Error as e:
+            await message.answer(f"Ошибка при переименовании: {e}")
 
 
 @dp.message(F.text.startswith("/delroom"), F.chat.type == "private")
