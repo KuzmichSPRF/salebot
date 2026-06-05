@@ -227,6 +227,15 @@ def load_storage():
         for row in rows:
             pending_users.add(row["user_id"])
 
+def get_active_announcement(user_id: int):
+    """Возвращает последнюю активную (draft или pending) заявку пользователя."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM announcements WHERE user_id = ? AND status IN ('draft', 'pending') ORDER BY id DESC LIMIT 1",
+            (user_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
 def update_user_info(user_id: int, username: str):
     """Обновляет имя пользователя во всех его объявлениях, если оно изменилось."""
     new_username = f"@{username}" if username else f"ID: {user_id}"
@@ -321,14 +330,25 @@ def build_admin_caption(message: types.Message) -> str:
 @dp.message(CommandStart(), F.chat.type == "private")
 async def start_cmd(message: types.Message):
     update_user_info(message.from_user.id, message.from_user.username)
-    if message.from_user.id in pending_users:
-        await message.answer("Пожалуйста, заверши текущую заявку (выбери комнату) или дождись решения администратора.", reply_markup=get_main_menu(message.from_user.id))
-    else:
-        await message.answer(
-            "Привет! Отправь мне фото и описание своего объявления одним сообщением. "
-            "Ты сможешь выбрать комнату для публикации. После одобрения админом оно появится в этой комнате.",
-            reply_markup=get_main_menu(message.from_user.id)
-        )
+    user_id = message.from_user.id
+    
+    if user_id in pending_users:
+        active = get_active_announcement(user_id)
+        if active:
+            if active["status"] == "draft":
+                await message.answer("У тебя есть незавершенная заявка. Пожалуйста, выбери комнату или отмени её:", reply_markup=get_user_room_keyboard(active["id"]))
+                return
+            else:
+                await message.answer("Твое объявление уже на модерации. Пожалуйста, дождись решения администратора.", reply_markup=get_main_menu(user_id))
+                return
+        else:
+            pending_users.discard(user_id)
+
+    await message.answer(
+        "Привет! Отправь мне фото и описание своего объявления одним сообщением. "
+        "Ты сможешь выбрать комнату для публикации. После одобрения админом оно появится в этой комнате.",
+        reply_markup=get_main_menu(user_id)
+    )
 
 
 @dp.message(F.text == "🔄 Главное меню", F.chat.type == "private")
@@ -886,7 +906,16 @@ async def handle_lot_submission(message: types.Message):
     user_id = message.from_user.id
     update_user_info(user_id, message.from_user.username)
     if user_id in pending_users:
-        await message.answer("Пожалуйста, заверши текущую заявку (выбери комнату) или дождись решения администратора.")
+        active = get_active_announcement(user_id)
+        if active:
+            if active["status"] == "draft":
+                await message.answer("У тебя есть незавершенная заявка. Пожалуйста, выбери комнату или отмени её:", reply_markup=get_user_room_keyboard(active["id"]))
+            else:
+                await message.answer("Твоя предыдущая заявка еще на модерации. Дождись решения администратора.")
+        else:
+            # Если в сете есть, а в базе нет - чистим сет
+            pending_users.discard(user_id)
+            await message.answer("Произошла ошибка состояния. Попробуй отправить объявление еще раз.")
         return
 
     with get_db() as conn:
@@ -1288,13 +1317,19 @@ async def user_delete_ad(callback: types.CallbackQuery):
 @dp.message(~F.photo | ~F.caption, F.chat.type == "private")
 async def handle_invalid_submission(message: types.Message):
     user_id = message.from_user.id
+    if message.text in ["🏠 Комнаты", "📬 Мои объявления", "🛠 Управление комнатами", "📖 Инструкция", "🔄 Главное меню"]:
+        return # Эти команды обрабатываются своими хендлерами
+
     if user_id in pending_users:
-        await message.answer("Пожалуйста, заверши текущую заявку (выбери комнату) или дождись решения администратора.", reply_markup=get_main_menu(user_id))
-    elif message.text != "/start":
-        await message.answer(
-            "Пожалуйста, отправь картинку и описание лота одним сообщением (прикрепи фото и добавь к нему текст).",
-            reply_markup=get_main_menu(user_id)
-        )
+        active = get_active_announcement(user_id)
+        if active and active["status"] == "draft":
+            await message.answer("Выбери комнату для текущего объявления или отмени его:", reply_markup=get_user_room_keyboard(active["id"]))
+            return
+
+    await message.answer(
+        "Пожалуйста, отправь картинку и описание лота ОДНИМ сообщением (прикрепи фото и добавь к нему текст).",
+        reply_markup=get_main_menu(user_id)
+    )
 
 
 async def main():
