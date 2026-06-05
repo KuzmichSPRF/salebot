@@ -254,9 +254,9 @@ def get_user_room_keyboard(announcement_id: int):
         rooms = conn.execute("SELECT name FROM rooms").fetchall()
         for row in rooms:
             room_name = row["name"]
-            callback = f"userselectroom_{announcement_id}_{room_name}"
+            callback = f"urs_{announcement_id}_{room_name}"
             builder.button(text=room_name, callback_data=callback)
-    builder.button(text="❌ Отменить", callback_data=f"usercancel_{announcement_id}")
+    builder.button(text="❌ Отменить", callback_data=f"urc_{announcement_id}")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -277,9 +277,9 @@ def get_group_rooms_keyboard(group_db_id: int):
             marker = "✅ " if room_name in selected_rooms else "🔲 "
             builder.button(
                 text=f"{marker}{room_name}", 
-                callback_data=f"grproom_{group_db_id}_{room_name}"
+                callback_data=f"grm_{group_db_id}_{room_name}"
             )
-    builder.button(text="💾 Сохранить", callback_data=f"savegrprooms_{group_db_id}")
+    builder.button(text="💾 Сохранить", callback_data=f"sgr_{group_db_id}")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -698,7 +698,7 @@ async def callback_del_group(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(F.data.startswith("grproom_"))
+@dp.callback_query(F.data.startswith("grm_"))
 async def toggle_group_room(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("Только администратор может настраивать комнаты.", show_alert=True)
@@ -720,7 +720,7 @@ async def toggle_group_room(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(F.data.startswith("savegrprooms_"))
+@dp.callback_query(F.data.startswith("sgr_"))
 async def save_group_rooms(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("Только администратор может настраивать комнаты.", show_alert=True)
@@ -767,7 +767,7 @@ async def list_rooms(message: types.Message):
         builder = InlineKeyboardBuilder()
         for row in rooms:
             room_name = row["name"]
-            builder.button(text=room_name, callback_data=f"openroom:{room_name}")
+            builder.button(text=room_name, callback_data=f"or:{room_name}")
         builder.adjust(1)
         await message.answer(format_room_list(), reply_markup=builder.as_markup())
     else:
@@ -863,7 +863,7 @@ async def my_ads(message: types.Message):
         )
 
 
-@dp.callback_query(F.data.startswith("openroom:"))
+@dp.callback_query(F.data.startswith("or:"))
 async def open_room(callback: types.CallbackQuery):
     room_name = callback.data.split(":", 1)[1]
     with get_db() as conn:
@@ -941,7 +941,7 @@ async def handle_lot_submission(message: types.Message):
     )
 
 
-@dp.callback_query(F.data.startswith("usercancel_"))
+@dp.callback_query(F.data.startswith("urc_"))
 async def user_cancel_lot(callback: types.CallbackQuery):
     announcement_id = int(callback.data.split("_")[1])
     announcement = find_announcement_by_id(announcement_id)
@@ -961,7 +961,7 @@ async def user_cancel_lot(callback: types.CallbackQuery):
     await callback.message.edit_text("❌ Заявка отменена.")
 
 
-@dp.callback_query(F.data.startswith("userselectroom_"))
+@dp.callback_query(F.data.startswith("urs_"))
 async def user_select_room(callback: types.CallbackQuery):
     data = callback.data.split("_", 2)
     if len(data) != 3:
