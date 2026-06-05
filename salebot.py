@@ -5,6 +5,7 @@ import logging
 import os
 import time 
 import sqlite3
+import tempfile
 from typing import Any, Awaitable, Callable, Dict
 from datetime import datetime
 from dotenv import load_dotenv
@@ -175,13 +176,19 @@ def is_main_admin(user_id: int) -> bool:
 def is_room_admin(user_id: int, room_name: str) -> bool:
     if not room_name:
         return is_main_admin(user_id)
-    return is_main_admin(user_id) or user_id in storage.get("room_admins", {}).get(room_name, [])
+    if is_main_admin(user_id):
+        return True
+    with get_db() as conn:
+        res = conn.execute("SELECT 1 FROM room_admins WHERE user_id = ? AND room_name = ?", (user_id, room_name)).fetchone()
+        return res is not None
 
 
 def is_any_admin(user_id: int) -> bool:
     if is_main_admin(user_id):
         return True
-    return any(user_id in admins for admins in storage.get("room_admins", {}).values())
+    with get_db() as conn:
+        res = conn.execute("SELECT 1 FROM room_admins WHERE user_id = ?", (user_id,)).fetchone()
+        return res is not None
 
 
 def get_main_menu(user_id: int = None) -> types.ReplyKeyboardMarkup:
@@ -306,10 +313,19 @@ def format_room_list() -> str:
         lines = ["💬 Доступные комнаты:"]
         for idx, row in enumerate(rooms, 1):
             room_name = row["name"]
-            count = sum(1 for item in storage["announcements"] if item["status"] == "approved" and item["room"] == room_name)
+            count = conn.execute("SELECT COUNT(*) FROM announcements WHERE status = 'approved' AND room = ?", (room_name,)).fetchone()[0]
             lines.append(f"{idx}. {room_name} — {count} объявлений")
         return "\n".join(lines)
 
+
+def find_announcement_by_id(announcement_id: int):
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM announcements WHERE id = ?", (announcement_id,)).fetchone()
+        if row:
+            data = dict(row)
+            data["published_messages"] = json.loads(data["published_messages"]) if data["published_messages"] else []
+            return data
+    return None
 
 def format_announcement(item: dict) -> str:
     created = item.get("created_at", "—")
@@ -459,19 +475,17 @@ async def del_room(message: types.Message):
         await message.answer("Использование: /delroom Название_комнаты", reply_markup=get_main_menu(message.from_user.id))
         return
 
-    if room_name not in storage["rooms"]:
-        await message.answer(f"Комната '{room_name}' не найдена.", reply_markup=get_main_menu(message.from_user.id))
-        return
+    with get_db() as conn:
+        room_exists = conn.execute("SELECT 1 FROM rooms WHERE name = ?", (room_name,)).fetchone()
+        if not room_exists:
+            await message.answer(f"Комната '{room_name}' не найдена.")
+            return
 
-    storage["rooms"].remove(room_name)
-    for grp in storage.get("publish_groups", []):
-        if "rooms" in grp and room_name in grp["rooms"]:
-            grp["rooms"].remove(room_name)
-            
-    storage.get("room_admins", {}).pop(room_name, None)
-            
-    save_storage()
-    await message.answer(f"Комната '{room_name}' успешно удалена.", reply_markup=get_main_menu(message.from_user.id))
+        conn.execute("DELETE FROM rooms WHERE name = ?", (room_name,))
+        conn.execute("DELETE FROM group_rooms WHERE room_name = ?", (room_name,))
+        conn.execute("DELETE FROM room_admins WHERE room_name = ?", (room_name,))
+        conn.commit()
+        await message.answer(f"Комната '{room_name}' успешно удалена.", reply_markup=get_main_menu(message.from_user.id))
 
 
 @dp.message(F.text.startswith("/assignadmin"), F.chat.type == "private")
