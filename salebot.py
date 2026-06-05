@@ -126,6 +126,17 @@ def load_storage():
         if item.get("status") in ("draft", "pending"):
             pending_users.add(item["user_id"])
 
+def update_user_info(user_id: int, username: str):
+    """Обновляет имя пользователя во всех его объявлениях, если оно изменилось."""
+    new_username = f"@{username}" if username else f"ID: {user_id}"
+    changed = False
+    for ann in storage.get("announcements", []):
+        if ann["user_id"] == user_id and ann.get("username") != new_username:
+            ann["username"] = new_username
+            changed = True
+    if changed:
+        save_storage()
+
 
 def save_storage():
     try:
@@ -219,6 +230,7 @@ def build_admin_caption(message: types.Message) -> str:
 
 @dp.message(CommandStart(), F.chat.type == "private")
 async def start_cmd(message: types.Message):
+    update_user_info(message.from_user.id, message.from_user.username)
     if message.from_user.id in pending_users:
         await message.answer("Пожалуйста, заверши текущую заявку (выбери комнату) или дождись решения администратора.", reply_markup=get_main_menu(message.from_user.id))
     else:
@@ -758,6 +770,7 @@ async def show_room(message: types.Message):
 @dp.message((F.text == "/myads") | (F.text == "📬 Мои объявления"), F.chat.type == "private")
 async def my_ads(message: types.Message):
     user_id = message.from_user.id
+    update_user_info(user_id, message.from_user.username)
     user_items = [item for item in storage["announcements"] if item["user_id"] == user_id]
     if not user_items:
         await message.answer("У тебя еще нет объявлений.", reply_markup=get_main_menu(user_id))
@@ -827,6 +840,7 @@ async def open_room(callback: types.CallbackQuery):
 @dp.message(F.photo & F.caption, F.chat.type == "private")
 async def handle_lot_submission(message: types.Message):
     user_id = message.from_user.id
+    update_user_info(user_id, message.from_user.username)
     if user_id in pending_users:
         await message.answer("Пожалуйста, заверши текущую заявку (выбери комнату) или дождись решения администратора.")
         return
