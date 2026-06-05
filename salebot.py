@@ -163,11 +163,6 @@ class ThrottlingMiddleware(BaseMiddleware):
 pending_users = set()
 announcement_index = {}
 
-storage = {
-    "rooms": [],
-    "announcements": []
-}
-
 
 def is_main_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
@@ -513,6 +508,7 @@ async def admin_list(message: types.Message):
             lines.append(f"• {row['user_id']}")
             
     if not has_room_admins:
+        lines.append("Нет назначенных администраторов комнат.")
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 @dp.message(F.text.startswith("/addgroup"))
@@ -885,26 +881,15 @@ async def handle_lot_submission(message: types.Message):
             await message.answer("В данный момент нет доступных комнат для публикации.")
             return
 
-    announcement_id = max((item["id"] for item in storage["announcements"]), default=0) + 1
-    caption = message.caption.strip()
-    username = f"@{message.from_user.username}" if message.from_user.username else f"ID: {user_id}"
+        cursor = conn.execute("""
+            INSERT INTO announcements (user_id, username, photo_file_id, caption, status, created_at, published_messages)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (user_id, f"@{message.from_user.username}" if message.from_user.username else f"ID: {user_id}", 
+              message.photo[-1].file_id, message.caption.strip(), "draft", 
+              datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "[]"))
+        announcement_id = cursor.lastrowid
+        conn.commit()
 
-    announcement = {
-        "id": announcement_id,
-        "user_id": user_id,
-        "username": username,
-        "photo_file_id": message.photo[-1].file_id,
-        "caption": caption,
-        "status": "draft",
-        "room": None,
-        "created_at": datetime.utcnow().isoformat(sep=" ", timespec="seconds"),
-        "approved_at": None,
-        "admin_id": None,
-        "published_messages": []
-    }
-
-    storage["announcements"].append(announcement)
-    save_storage()
     pending_users.add(user_id)
     announcement_index[user_id] = announcement_id
 
@@ -1021,17 +1006,13 @@ async def approve_lot(callback: types.CallbackQuery):
     except Exception as e:
         logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
-    with get_db() as conn:
-        # Берем группы, которые подписаны на эту комнату
-        rows = conn.execute("SELECT pg.chat_id, pg.thread_id FROM publish_groups pg JOIN group_rooms gr ON pg.id = gr.group_id WHERE gr.room_name = ?", (room_name,)).fetchall()
-        groups = [dict(r) for r in rows]
-
     published_count = 0
-    announcement["published_messages"] = []
+    published_messages = []
+    
+    with get_db() as conn:
+        groups = conn.execute("SELECT pg.chat_id, pg.thread_id FROM publish_groups pg JOIN group_rooms gr ON pg.id = gr.group_id WHERE gr.room_name = ?", (room_name,)).fetchall()
+
     for grp in groups:
-        if "rooms" in grp and room_name not in grp["rooms"]:
-            continue
-            
         try:
             msg = await bot.send_photo(
                 chat_id=grp["chat_id"],
@@ -1039,7 +1020,7 @@ async def approve_lot(callback: types.CallbackQuery):
                 photo=announcement["photo_file_id"],
                 caption=announcement["caption"]
             )
-            announcement["published_messages"].append({
+            published_messages.append({
                 "chat_id": grp["chat_id"],
                 "message_id": msg.message_id
             })
@@ -1049,7 +1030,7 @@ async def approve_lot(callback: types.CallbackQuery):
 
     with get_db() as conn:
         conn.execute("UPDATE announcements SET status = 'approved', approved_at = ?, admin_id = ?, published_messages = ? WHERE id = ?",
-                     ("approved", approved_at, callback.from_user.id, json.dumps(announcement["published_messages"]), announcement_id))
+                     (approved_at, callback.from_user.id, json.dumps(published_messages), announcement_id))
         conn.commit()
 
     await callback.message.edit_caption(
