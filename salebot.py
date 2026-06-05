@@ -1028,6 +1028,10 @@ async def approve_lot(callback: types.CallbackQuery):
         await callback.answer("Объявление не найдено.", show_alert=True)
         return
         
+    if not announcement.get("photo_file_id"):
+        await callback.answer("Ошибка: у объявления отсутствует фото.", show_alert=True)
+        return
+
     room_name = announcement.get("room")
     if not is_room_admin(callback.from_user.id, room_name):
         await callback.answer("У вас нет прав на модерацию этой комнаты.", show_alert=True)
@@ -1075,7 +1079,7 @@ async def approve_lot(callback: types.CallbackQuery):
             })
             published_count += 1
         except Exception as e:
-            logging.error(f"Не удалось опубликовать объявление в группе {grp.get('chat_id')}: {e}")
+            logging.error(f"Не удалось опубликовать объявление в группе {grp['chat_id']}: {e}")
 
     with get_db() as conn:
         conn.execute("UPDATE announcements SET status = 'approved', approved_at = ?, admin_id = ?, published_messages = ? WHERE id = ?",
