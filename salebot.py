@@ -278,6 +278,7 @@ async def prompt_room_management(message: types.Message):
         "➕ <b>Назначить:</b> <code>/assignadmin ID Название_комнаты</code>\n"
         "➖ <b>Разжаловать:</b> <code>/revokeadmin ID Название_комнаты</code>\n"
         "📋 <b>Список админов:</b> <code>/adminlist</code>\n"
+        "🧹 <b>Очистить фантомы:</b> <code>/clean_ghosts</code>\n"
         "♻️ <b>Восстановить объявление:</b> <code>/restoread ID</code>\n\n"
         "� <b>Публикация:</b>\n"
         "📋 <b>Список чатов:</b> <code>/groups</code>\n"
@@ -759,13 +760,17 @@ async def show_room(message: types.Message):
     await message.answer(f"Объявления в комнате '{room_name}':")
     for item in items:
         reply_markup = get_admin_ad_keyboard(item["id"]) if is_room_admin(message.from_user.id, room_name) else None
-        await bot.send_photo(
-            chat_id=message.from_user.id,
-            photo=item["photo_file_id"],
-            caption=format_announcement(item),
-            parse_mode="HTML",
-            reply_markup=reply_markup
-        )
+        try:
+            await bot.send_photo(
+                chat_id=message.from_user.id,
+                photo=item["photo_file_id"],
+                caption=format_announcement(item),
+                parse_mode="HTML",
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            logging.error(f"Ошибка при отправке фото для объявления {item['id']}: {e}")
+            await message.answer(f"⚠️ Не удалось загрузить фото для объявления ID: {item['id']}. Возможно, оно устарело.")
 
 
 @dp.message((F.text == "/myads") | (F.text == "📬 Мои объявления"), F.chat.type == "private")
@@ -829,13 +834,17 @@ async def open_room(callback: types.CallbackQuery):
     await bot.send_message(callback.from_user.id, f"Объявления в комнате '{room_name}':")
     for item in items:
         reply_markup = get_admin_ad_keyboard(item["id"]) if is_room_admin(callback.from_user.id, room_name) else None
-        await bot.send_photo(
-            chat_id=callback.from_user.id,
-            photo=item["photo_file_id"],
-            caption=format_announcement(item),
-            parse_mode="HTML",
-            reply_markup=reply_markup
-        )
+        try:
+            await bot.send_photo(
+                chat_id=callback.from_user.id,
+                photo=item["photo_file_id"],
+                caption=format_announcement(item),
+                parse_mode="HTML",
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            logging.error(f"Ошибка при отправке фото в open_room для ID {item['id']}: {e}")
+            await bot.send_message(callback.from_user.id, f"⚠️ Объявление ID {item['id']} недоступно (ошибка загрузки фото).")
 
 
 @dp.message(F.photo & F.caption, F.chat.type == "private")
@@ -1194,6 +1203,25 @@ async def restore_ad_cmd(message: types.Message):
         f"Теперь оно снова отображается в комнате <b>{html.escape(str(room))}</b>.",
         parse_mode="HTML"
     )
+
+@dp.message(F.text == "/clean_ghosts", F.chat.type == "private")
+async def clean_ghosts_cmd(message: types.Message):
+    if not is_main_admin(message.from_user.id):
+        return
+
+    count = 0
+    for ann in storage.get("announcements", []):
+        # Если объявление одобрено, но комната была удалена или оно "битое"
+        if ann["status"] == "approved":
+            if ann.get("room") not in storage["rooms"]:
+                ann["status"] = "deleted"
+                count += 1
+    
+    if count > 0:
+        save_storage()
+        await message.answer(f"✅ База очищена! Удалено {count} фантомных объявлений, у которых не было комнат.")
+    else:
+        await message.answer("База чиста, фантомных объявлений не обнаружено.")
 
 @dp.callback_query(F.data.startswith("userdeletead_"))
 async def user_delete_ad(callback: types.CallbackQuery):
