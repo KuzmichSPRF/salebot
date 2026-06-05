@@ -421,6 +421,10 @@ async def add_room(message: types.Message):
         await message.answer("Название комнаты не может быть пустым.")
         return
 
+    if len(room_name) > 30:
+        await message.answer("Название комнаты слишком длинное (максимум 30 символов).")
+        return
+
     with get_db() as conn:
         try:
             conn.execute("INSERT INTO rooms (name) VALUES (?)", (room_name,))
@@ -1086,8 +1090,9 @@ async def approve_lot(callback: types.CallbackQuery):
                      (approved_at, callback.from_user.id, json.dumps(published_messages), announcement_id))
         conn.commit()
 
+    escaped_caption = html.escape(callback.message.caption or "")
     await callback.message.edit_caption(
-        caption=f"{callback.message.caption}\n\n<b>[✅ ОДОБРЕНО В КОМНАТУ {room_name}]</b>",
+        caption=f"{escaped_caption}\n\n<b>[✅ ОДОБРЕНО В КОМНАТУ {room_name}]</b>",
         reply_markup=None,
         parse_mode="HTML"
     )
@@ -1150,10 +1155,11 @@ async def finalize_rejection(announcement_id: int, admin_chat_id: int, admin_msg
         logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
     try:
+        escaped_orig = html.escape(orig_caption or "")
         await bot.edit_message_caption(
             chat_id=admin_chat_id,
             message_id=admin_msg_id,
-            caption=f"{orig_caption}\n\n<b>[❌ ОТКЛОНЕНО]</b>" + (f"\nПричина: {html.escape(reason)}" if reason else ""),
+            caption=f"{escaped_orig}\n\n<b>[❌ ОТКЛОНЕНО]</b>" + (f"\nПричина: {html.escape(reason)}" if reason else ""),
             reply_markup=None,
             parse_mode="HTML"
         )
@@ -1230,8 +1236,9 @@ async def delete_ad(callback: types.CallbackQuery):
         conn.execute("UPDATE announcements SET status = 'deleted' WHERE id = ?", (ad_id,))
         conn.commit()
 
+    escaped_caption = html.escape(callback.message.caption or "")
     await callback.message.edit_caption(
-        caption=f"{callback.message.caption}\n\n<b>[❌ УДАЛЕНО АДМИНИСТРАТОРОМ]</b>",
+        caption=f"{escaped_caption}\n\n<b>[❌ УДАЛЕНО АДМИНИСТРАТОРОМ]</b>",
         reply_markup=None,
         parse_mode="HTML"
     )
@@ -1320,8 +1327,9 @@ async def user_delete_ad(callback: types.CallbackQuery):
 
     await callback.answer("Объявление успешно удалено.", show_alert=True)
     
+    escaped_caption = html.escape(callback.message.caption or "")
     await callback.message.edit_caption(
-        caption=f"{callback.message.caption}\n\n<b>[🗑 УДАЛЕНО ВЛАДЕЛЬЦЕМ]</b>",
+        caption=f"{escaped_caption}\n\n<b>[🗑 УДАЛЕНО ВЛАДЕЛЬЦЕМ]</b>",
         reply_markup=None,
         parse_mode="HTML"
     )
