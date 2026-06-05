@@ -205,61 +205,17 @@ def get_main_menu(user_id: int = None) -> types.ReplyKeyboardMarkup:
 
 
 def load_storage():
-    global storage
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                storage = json.load(f)
-        except Exception as e:
-            logging.error(f"Ошибка загрузки storage.json: {e}")
-            storage = {"rooms": [], "announcements": []}
-    else:
-        save_storage()
-        
-    # Инициализация списка групп для рассылки (сохраняем старую группу из .env для совместимости)
-    if "publish_groups" not in storage:
-        storage["publish_groups"] = []
-        if GROUP_ID:
-            storage["publish_groups"].append({
-                "chat_id": GROUP_ID,
-                "thread_id": THREAD_ID,
-                "name": "Основная группа (из .env)"
-            })
-        save_storage()
-        
-    if "room_admins" not in storage:
-        storage["room_admins"] = {}
-        
-    # Восстанавливаем pending_users, чтобы после рестарта бота 
-    # злоумышленники не могли заспамить БД незавершенными черновиками
-    for item in storage.get("announcements", []):
-        if item.get("status") in ("draft", "pending"):
-            pending_users.add(item["user_id"])
+    with get_db() as conn:
+        rows = conn.execute("SELECT user_id FROM announcements WHERE status IN ('draft', 'pending')").fetchall()
+        for row in rows:
+            pending_users.add(row["user_id"])
 
 def update_user_info(user_id: int, username: str):
     """Обновляет имя пользователя во всех его объявлениях, если оно изменилось."""
     new_username = f"@{username}" if username else f"ID: {user_id}"
-    changed = False
-    for ann in storage.get("announcements", []):
-        if ann["user_id"] == user_id and ann.get("username") != new_username:
-            ann["username"] = new_username
-            changed = True
-    if changed:
-        save_storage()
-
-
-def save_storage():
-    try:
-        # Атомарное сохранение через временный файл предотвращает 
-        # повреждение storage.json при одновременной записи
-        fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(DATA_FILE), prefix="storage_", suffix=".json")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(storage, f, ensure_ascii=False, indent=2)
-        os.replace(temp_path, DATA_FILE)
-    except Exception as e:
-        logging.error(f"Ошибка сохранения storage.json: {e}")
-        if 'temp_path' in locals() and os.path.exists(temp_path):
-            os.remove(temp_path)
+    with get_db() as conn:
+        conn.execute("UPDATE announcements SET username = ? WHERE user_id = ?", (new_username, user_id))
+        conn.commit()
 
 
 def normalize_room(name: str) -> str:
@@ -284,22 +240,20 @@ def get_admin_ad_keyboard(announcement_id: int):
     builder.button(text="🗑 Удалить", callback_data=f"deletead_{announcement_id}")
     return builder.as_markup()
 
-def get_group_rooms_keyboard(group_idx: int):
+def get_group_rooms_keyboard(group_db_id: int):
     builder = InlineKeyboardBuilder()
-    groups = storage.get("publish_groups", [])
-    if not (0 <= group_idx < len(groups)):
-        return builder.as_markup()
-    
-    group = groups[group_idx]
-    selected_rooms = group.get("rooms", [])
-    
-    for r_idx, room_name in enumerate(storage["rooms"]):
-        marker = "✅ " if room_name in selected_rooms else "🔲 "
-        builder.button(
-            text=f"{marker}{room_name}", 
-            callback_data=f"grproom_{group_idx}_{r_idx}"
-        )
-    builder.button(text="💾 Сохранить", callback_data=f"savegrprooms_{group_idx}")
+    with get_db() as conn:
+        selected_rooms = [r["room_name"] for r in conn.execute("SELECT room_name FROM group_rooms WHERE group_id = ?", (group_db_id,)).fetchall()]
+        all_rooms = conn.execute("SELECT name FROM rooms").fetchall()
+        
+        for room in all_rooms:
+            room_name = room["name"]
+            marker = "✅ " if room_name in selected_rooms else "🔲 "
+            builder.button(
+                text=f"{marker}{room_name}", 
+                callback_data=f"grproom_{group_db_id}_{room_name}"
+            )
+    builder.button(text="💾 Сохранить", callback_data=f"savegrprooms_{group_db_id}")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -476,11 +430,6 @@ async def del_room(message: types.Message):
         return
 
     with get_db() as conn:
-        room_exists = conn.execute("SELECT 1 FROM rooms WHERE name = ?", (room_name,)).fetchone()
-        if not room_exists:
-            await message.answer(f"Комната '{room_name}' не найдена.")
-            return
-
         conn.execute("DELETE FROM rooms WHERE name = ?", (room_name,))
         conn.execute("DELETE FROM group_rooms WHERE room_name = ?", (room_name,))
         conn.execute("DELETE FROM room_admins WHERE room_name = ?", (room_name,))
@@ -505,22 +454,17 @@ async def assign_admin(message: types.Message):
         return
         
     room_name = normalize_room(parts[2])
-    if room_name not in storage["rooms"]:
-        await message.answer(f"Комната '{room_name}' не найдена.")
-        return
-        
-    if "room_admins" not in storage:
-        storage["room_admins"] = {}
-        
-    if room_name not in storage["room_admins"]:
-        storage["room_admins"][room_name] = []
-        
-    if new_admin_id in storage["room_admins"][room_name]:
-        await message.answer("Этот пользователь уже является администратором данной комнаты.")
-        return
-        
-    storage["room_admins"][room_name].append(new_admin_id)
-    save_storage()
+    with get_db() as conn:
+        room_exists = conn.execute("SELECT 1 FROM rooms WHERE name = ?", (room_name,)).fetchone()
+        if not room_exists:
+            await message.answer(f"Комната '{room_name}' не найдена.")
+            return
+        try:
+            conn.execute("INSERT INTO room_admins (user_id, room_name) VALUES (?, ?)", (new_admin_id, room_name))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            await message.answer("Этот пользователь уже является администратором данной комнаты.")
+            return
     await message.answer(f"✅ Пользователь {new_admin_id} назначен модератором комнаты '{room_name}'.")
 
 
@@ -541,13 +485,10 @@ async def revoke_admin(message: types.Message):
         return
         
     room_name = normalize_room(parts[2])
-    
-    if "room_admins" in storage and room_name in storage["room_admins"] and old_admin_id in storage["room_admins"][room_name]:
-        storage["room_admins"][room_name].remove(old_admin_id)
-        save_storage()
+    with get_db() as conn:
+        conn.execute("DELETE FROM room_admins WHERE user_id = ? AND room_name = ?", (old_admin_id, room_name))
+        conn.commit()
         await message.answer(f"❌ Пользователь {old_admin_id} удалён из модераторов комнаты '{room_name}'.")
-    else:
-        await message.answer("Этот пользователь не является администратором указанной комнаты.")
 
 
 @dp.message(F.text == "/adminlist", F.chat.type == "private")
@@ -560,15 +501,18 @@ async def admin_list(message: types.Message):
         lines.append(f"• {aid}")
         
     lines.append("\n👤 <b>Администраторы комнат:</b>")
-    has_room_admins = False
-    for room, admins in storage.get("room_admins", {}).items():
-        if admins:
+    with get_db() as conn:
+        admins = conn.execute("SELECT room_name, user_id FROM room_admins ORDER BY room_name").fetchall()
+        has_room_admins = False
+        current_room = None
+        for row in admins:
             has_room_admins = True
-            lines.append(f"\n📂 <b>{room}:</b>\n" + "\n".join(f"• {aid}" for aid in admins))
+            if row["room_name"] != current_room:
+                current_room = row["room_name"]
+                lines.append(f"\n📂 <b>{current_room}:</b>")
+            lines.append(f"• {row['user_id']}")
             
     if not has_room_admins:
-        lines.append("Нет назначенных администраторов комнат.")
-        
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 @dp.message(F.text.startswith("/addgroup"))
@@ -599,24 +543,19 @@ async def add_publish_group(message: types.Message):
         thread_id = message.message_thread_id
         name = parts[1] if len(parts) > 1 else message.chat.title or "Группа без названия"
 
-    storage.setdefault("publish_groups", [])
-    for g in storage["publish_groups"]:
-        if g["chat_id"] == chat_id and g.get("thread_id") == thread_id:
+    with get_db() as conn:
+        existing = conn.execute("SELECT id FROM publish_groups WHERE chat_id = ? AND (thread_id = ? OR (thread_id IS NULL AND ? IS NULL))", (chat_id, thread_id, thread_id)).fetchone()
+        if existing:
             await message.answer("Этот чат (или ветка) уже добавлен в список для публикаций.")
             return
+        cursor = conn.execute("INSERT INTO publish_groups (chat_id, thread_id, name) VALUES (?, ?, ?)", (chat_id, thread_id, name))
+        conn.commit()
+        group_id = cursor.lastrowid
 
-    storage["publish_groups"].append({
-        "chat_id": chat_id,
-        "thread_id": thread_id,
-        "name": name,
-        "rooms": []
-    })
-    save_storage()
-    group_idx = len(storage["publish_groups"]) - 1
     await message.answer(
         f"✅ Чат '{name}' успешно добавлен для публикаций!\n"
         "Выберите комнаты, из которых сюда будут публиковаться объявления:",
-        reply_markup=get_group_rooms_keyboard(group_idx)
+        reply_markup=get_group_rooms_keyboard(group_id)
     )
 
     admin_name = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
@@ -640,14 +579,10 @@ async def set_rooms_command(message: types.Message):
     chat_id = message.chat.id
     thread_id = message.message_thread_id
     
-    groups = storage.get("publish_groups", [])
-    group_idx = -1
-    for i, g in enumerate(groups):
-        if g["chat_id"] == chat_id and g.get("thread_id") == thread_id:
-            group_idx = i
-            break
+    with get_db() as conn:
+        group = conn.execute("SELECT id, name FROM publish_groups WHERE chat_id = ? AND (thread_id = ? OR (thread_id IS NULL AND ? IS NULL))", (chat_id, thread_id, thread_id)).fetchone()
     
-    if group_idx == -1:
+    if not group:
         if message.chat.type == "private":
             await message.answer("В личных сообщениях используйте команду /groups для выбора чата.")
         else:
@@ -655,8 +590,8 @@ async def set_rooms_command(message: types.Message):
         return
 
     await message.answer(
-        f"⚙️ Настройка комнат для чата <b>{html.escape(groups[group_idx].get('name'))}</b>:",
-        reply_markup=get_group_rooms_keyboard(group_idx),
+        f"⚙️ Настройка комнат для чата <b>{html.escape(group['name'])}</b>:",
+        reply_markup=get_group_rooms_keyboard(group["id"]),
         parse_mode="HTML"
     )
 
@@ -724,31 +659,13 @@ async def callback_del_group(callback: types.CallbackQuery):
         await callback.answer("Только администратор может удалять группы.", show_alert=True)
         return
 
-    idx = int(callback.data.split("_")[1])
-    groups = storage.get("publish_groups", [])
-    
-    if 0 <= idx < len(groups):
-        removed = groups.pop(idx)
-        save_storage()
-        await callback.answer(f"Группа '{removed['name']}' удалена.", show_alert=True)
-        
-        # Обновляем сообщение, если удалили не последнюю группу, иначе пишем, что список пуст
-        if not groups:
-            await callback.message.edit_text("Список групп для публикаций пуст.")
-        else:
-            builder = InlineKeyboardBuilder()
-            for i, g in enumerate(groups):
-                thread_info = f" (Ветка: {g.get('thread_id')})" if g.get("thread_id") else ""
-                builder.button(text=f"⚙️ Настроить {g.get('name')}{thread_info}", callback_data=f"editgrp_{i}")
-                builder.button(text=f"❌ Удалить", callback_data=f"delgroup_{i}")
-            builder.adjust(2)
-            await callback.message.edit_text(
-                "📢 <b>Группы для публикаций:</b>\nВыбери группу для настройки комнат или нажми ❌ для удаления.",
-                parse_mode="HTML",
-                reply_markup=builder.as_markup()
-            )
-    else:
-        await callback.answer("Группа не найдена или уже удалена.", show_alert=True)
+    group_id = int(callback.data.split("_")[1])
+    with get_db() as conn:
+        conn.execute("DELETE FROM publish_groups WHERE id = ?", (group_id,))
+        conn.execute("DELETE FROM group_rooms WHERE group_id = ?", (group_id,))
+        conn.commit()
+    await callback.message.edit_text("Группа удалена из списка.")
+    await callback.answer()
 
 
 @dp.callback_query(F.data.startswith("grproom_"))
@@ -758,36 +675,19 @@ async def toggle_group_room(callback: types.CallbackQuery):
         return
 
     parts = callback.data.split("_")
-    if len(parts) != 3:
-        return
-        
-    group_idx = int(parts[1])
-    r_idx = int(parts[2])
+    group_id = int(parts[1])
+    room_name = parts[2]
     
-    groups = storage.get("publish_groups", [])
-    if not (0 <= group_idx < len(groups)):
-        await callback.answer("Группа не найдена.", show_alert=True)
-        return
-        
-    group = groups[group_idx]
-    if "rooms" not in group:
-        group["rooms"] = []
-        
-    rooms_list = storage.get("rooms", [])
-    if not (0 <= r_idx < len(rooms_list)):
-        await callback.answer("Комната не найдена.", show_alert=True)
-        return
-        
-    room_name = rooms_list[r_idx]
+    with get_db() as conn:
+        exists = conn.execute("SELECT 1 FROM group_rooms WHERE group_id = ? AND room_name = ?", (group_id, room_name)).fetchone()
+        if exists:
+            conn.execute("DELETE FROM group_rooms WHERE group_id = ? AND room_name = ?", (group_id, room_name))
+        else:
+            conn.execute("INSERT INTO group_rooms (group_id, room_name) VALUES (?, ?)", (group_id, room_name))
+        conn.commit()
     
-    if room_name in group["rooms"]:
-        group["rooms"].remove(room_name)
-    else:
-        group["rooms"].append(room_name)
-        
-    save_storage()
-    
-    await callback.message.edit_reply_markup(reply_markup=get_group_rooms_keyboard(group_idx))
+    await callback.message.edit_reply_markup(reply_markup=get_group_rooms_keyboard(group_id))
+    await callback.answer()
 
 
 @dp.callback_query(F.data.startswith("savegrprooms_"))
@@ -797,22 +697,18 @@ async def save_group_rooms(callback: types.CallbackQuery):
         return
 
     parts = callback.data.split("_")
-    group_idx = int(parts[1])
+    group_id = int(parts[1])
     
-    groups = storage.get("publish_groups", [])
-    if not (0 <= group_idx < len(groups)):
-        await callback.message.edit_text("Группа не найдена или была удалена.")
-        return
+    with get_db() as conn:
+        group = conn.execute("SELECT name FROM publish_groups WHERE id = ?", (group_id,)).fetchone()
+        selected = [r["room_name"] for r in conn.execute("SELECT room_name FROM group_rooms WHERE group_id = ?", (group_id,)).fetchall()]
         
-    group = groups[group_idx]
-    selected = group.get("rooms", [])
-    
     if not selected:
         rooms_text = "Ни одной комнаты не выбрано. Объявления сюда приходить не будут."
     else:
         rooms_text = "Выбранные комнаты:\n" + "\n".join(f"• {r}" for r in selected)
         
-    await callback.message.edit_text(f"✅ Настройка комнат для чата <b>{group.get('name')}</b> сохранена.\n\n{rooms_text}", parse_mode="HTML")
+    await callback.message.edit_text(f"✅ Настройка комнат для чата <b>{group['name']}</b> сохранена.\n\n{rooms_text}", parse_mode="HTML")
 
 
 @dp.callback_query(F.data.startswith("editgrp_"))
@@ -820,26 +716,27 @@ async def edit_group_rooms(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         await callback.answer("Только администратор может настраивать комнаты.", show_alert=True)
         return
-    idx = int(callback.data.split("_")[1])
-    groups = storage.get("publish_groups", [])
-    if not (0 <= idx < len(groups)):
-        await callback.answer("Группа не найдена.", show_alert=True)
-        return
-    
-    group = groups[idx]
+    group_id = int(callback.data.split("_")[1])
+    with get_db() as conn:
+        group = conn.execute("SELECT name FROM publish_groups WHERE id = ?", (group_id,)).fetchone()
+
     await callback.message.edit_text(
-        f"⚙️ Настройка комнат для чата <b>{group.get('name')}</b>:\n"
+        f"⚙️ Настройка комнат для чата <b>{group['name']}</b>:\n"
         "Выберите комнаты, из которых в этот чат будут приходить объявления:",
-        reply_markup=get_group_rooms_keyboard(idx),
+        reply_markup=get_group_rooms_keyboard(group_id),
         parse_mode="HTML"
     )
 
 
 @dp.message((F.text == "/rooms") | (F.text == "🏠 Комнаты"), F.chat.type == "private")
 async def list_rooms(message: types.Message):
-    builder = InlineKeyboardBuilder()
-    if storage["rooms"]:
-        for room_name in storage["rooms"]:
+    with get_db() as conn:
+        rooms = conn.execute("SELECT name FROM rooms").fetchall()
+    
+    if rooms:
+        builder = InlineKeyboardBuilder()
+        for row in rooms:
+            room_name = row["name"]
             builder.button(text=room_name, callback_data=f"openroom:{room_name}")
         builder.adjust(1)
         await message.answer(format_room_list(), reply_markup=builder.as_markup())
@@ -860,8 +757,10 @@ async def show_room(message: types.Message):
         if not room_exists:
             await message.answer(f"Комната '{room_name}' не найдена. Используй /rooms для списка комнат.", reply_markup=get_main_menu(message.from_user.id))
             return
+        
+        rows = conn.execute("SELECT * FROM announcements WHERE status = 'approved' AND room = ?", (room_name,)).fetchall()
+        items = [dict(r) for r in rows]
 
-    items = [item for item in storage["announcements"] if item["status"] == "approved" and item["room"] == room_name]
     if not items:
         await message.answer(f"В комнате '{room_name}' пока нет одобренных объявлений.")
         return
@@ -890,7 +789,10 @@ async def show_room(message: types.Message):
 async def my_ads(message: types.Message):
     user_id = message.from_user.id
     update_user_info(user_id, message.from_user.username)
-    user_items = [item for item in storage["announcements"] if item["user_id"] == user_id]
+    with get_db() as conn:
+        rows = conn.execute("SELECT * FROM announcements WHERE user_id = ?", (user_id,)).fetchall()
+        user_items = [dict(r) for r in rows]
+
     if not user_items:
         await message.answer("У тебя еще нет объявлений.", reply_markup=get_main_menu(user_id))
         return
@@ -939,8 +841,10 @@ async def open_room(callback: types.CallbackQuery):
         if not room_exists:
             await callback.answer("Комната не найдена.", show_alert=True)
             return
+        
+        rows = conn.execute("SELECT * FROM announcements WHERE status = 'approved' AND room = ?", (room_name,)).fetchall()
+        items = [dict(r) for r in rows]
 
-    items = [item for item in storage["announcements"] if item["status"] == "approved" and item["room"] == room_name]
     if not items:
         await callback.answer(f"В комнате '{room_name}' пока нет одобренных объявлений.")
         return
@@ -1022,8 +926,9 @@ async def user_cancel_lot(callback: types.CallbackQuery):
         await callback.answer("Заявка уже отправлена.", show_alert=True)
         return
 
-    announcement["status"] = "cancelled"
-    save_storage()
+    with get_db() as conn:
+        conn.execute("UPDATE announcements SET status = 'cancelled' WHERE id = ?", (announcement_id,))
+        conn.commit()
     pending_users.discard(callback.from_user.id)
     announcement_index.pop(callback.from_user.id, None)
 
@@ -1053,11 +958,9 @@ async def user_select_room(callback: types.CallbackQuery):
         if not room_exists:
             await callback.answer("Комната не найдена.", show_alert=True)
             return
-
-    announcement["room"] = room_name
-    announcement["status"] = "pending"
-    save_storage()
-
+        conn.execute("UPDATE announcements SET room = ?, status = 'pending' WHERE id = ?", (room_name, announcement_id))
+        conn.commit()
+    
     await callback.message.edit_text(f"Твой лот отправлен на модерацию в комнату '{room_name}'. Ожидай решения администратора.")
 
     builder = InlineKeyboardBuilder()
@@ -1067,9 +970,11 @@ async def user_select_room(callback: types.CallbackQuery):
 
     admin_caption = f"Новый лот от {html.escape(announcement['username'])} в комнату <b>{html.escape(room_name)}</b>:\n\n{html.escape(announcement['caption'])}"
     notify_admins = set(ADMIN_IDS)
-    if "room_admins" in storage and room_name in storage["room_admins"]:
-        notify_admins.update(storage["room_admins"][room_name])
-        
+    with get_db() as conn:
+        room_admins = conn.execute("SELECT user_id FROM room_admins WHERE room_name = ?", (room_name,)).fetchall()
+        for r in room_admins:
+            notify_admins.add(r["user_id"])
+
     for admin_id in notify_admins:
         try:
             await bot.send_photo(
@@ -1106,11 +1011,7 @@ async def approve_lot(callback: types.CallbackQuery):
             await callback.answer("Выбранная комната была удалена.", show_alert=True)
             return
 
-    announcement["status"] = "approved"
-    announcement["approved_at"] = datetime.utcnow().isoformat(sep=" ", timespec="seconds")
-    announcement["admin_id"] = callback.from_user.id
-    save_storage()
-
+    approved_at = datetime.utcnow().isoformat(sep=" ", timespec="seconds")
     user_id = announcement["user_id"]
     pending_users.discard(user_id)
     announcement_index.pop(user_id, None)
@@ -1120,9 +1021,10 @@ async def approve_lot(callback: types.CallbackQuery):
     except Exception as e:
         logging.error(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
-    groups = storage.get("publish_groups", [])
-    if not groups and GROUP_ID:
-        groups = [{"chat_id": GROUP_ID, "thread_id": THREAD_ID}]
+    with get_db() as conn:
+        # Берем группы, которые подписаны на эту комнату
+        rows = conn.execute("SELECT pg.chat_id, pg.thread_id FROM publish_groups pg JOIN group_rooms gr ON pg.id = gr.group_id WHERE gr.room_name = ?", (room_name,)).fetchall()
+        groups = [dict(r) for r in rows]
 
     published_count = 0
     announcement["published_messages"] = []
@@ -1144,6 +1046,11 @@ async def approve_lot(callback: types.CallbackQuery):
             published_count += 1
         except Exception as e:
             logging.error(f"Не удалось опубликовать объявление в группе {grp.get('chat_id')}: {e}")
+
+    with get_db() as conn:
+        conn.execute("UPDATE announcements SET status = 'approved', approved_at = ?, admin_id = ?, published_messages = ? WHERE id = ?",
+                     ("approved", approved_at, callback.from_user.id, json.dumps(announcement["published_messages"]), announcement_id))
+        conn.commit()
 
     await callback.message.edit_caption(
         caption=f"{callback.message.caption}\n\n<b>[✅ ОДОБРЕНО В КОМНАТУ {room_name}]</b>",
@@ -1192,8 +1099,9 @@ async def finalize_rejection(announcement_id: int, admin_chat_id: int, admin_msg
     if not announcement or announcement["status"] != "pending":
         return False
 
-    announcement["status"] = "rejected"
-    save_storage()
+    with get_db() as conn:
+        conn.execute("UPDATE announcements SET status = 'rejected' WHERE id = ?", (announcement_id,))
+        conn.commit()
 
     user_id = announcement["user_id"]
     pending_users.discard(user_id)
@@ -1285,9 +1193,10 @@ async def delete_ad(callback: types.CallbackQuery):
             except Exception as e:
                 logging.error(f"Не удалось удалить сообщение {pub_msg['message_id']} из чата {pub_msg['chat_id']}: {e}")
 
-    announcement["status"] = "deleted"
-    save_storage()
-    
+    with get_db() as conn:
+        conn.execute("UPDATE announcements SET status = 'deleted' WHERE id = ?", (ad_id,))
+        conn.commit()
+
     await callback.message.edit_caption(
         caption=f"{callback.message.caption}\n\n<b>[❌ УДАЛЕНО АДМИНИСТРАТОРОМ]</b>",
         reply_markup=None,
@@ -1318,12 +1227,11 @@ async def restore_ad_cmd(message: types.Message):
         return
 
     # Возвращаем статус approved
-    announcement["status"] = "approved"
-    # Если комната была удалена, предложим админу проверить её позже
     room = announcement.get("room")
-    
-    save_storage()
-    
+    with get_db() as conn:
+        conn.execute("UPDATE announcements SET status = 'approved' WHERE id = ?", (ad_id,))
+        conn.commit()
+
     await message.answer(
         f"✅ Объявление ID {ad_id} успешно восстановлено!\n"
         f"Теперь оно снова отображается в комнате <b>{html.escape(str(room))}</b>.",
@@ -1336,17 +1244,16 @@ async def clean_ghosts_cmd(message: types.Message):
         return
 
     count = 0
-    for ann in storage.get("announcements", []):
-        # Если объявление одобрено, но комната была удалена или оно "битое"
-        if ann["status"] == "approved":
-            with get_db() as conn:
-                room_exists = conn.execute("SELECT 1 FROM rooms WHERE name = ?", (ann.get("room"),)).fetchone()
-                if not room_exists:
-                    ann["status"] = "deleted"
-                    count += 1
-    
+    with get_db() as conn:
+        rows = conn.execute("SELECT id, room FROM announcements WHERE status = 'approved'").fetchall()
+        for row in rows:
+            room_exists = conn.execute("SELECT 1 FROM rooms WHERE name = ?", (row["room"],)).fetchone()
+            if not room_exists:
+                conn.execute("UPDATE announcements SET status = 'deleted' WHERE id = ?", (row["id"],))
+                count += 1
+        conn.commit()
+
     if count > 0:
-        save_storage()
         await message.answer(f"✅ База очищена! Удалено {count} фантомных объявлений, у которых не было комнат.")
     else:
         await message.answer("База чиста, фантомных объявлений не обнаружено.")
@@ -1375,9 +1282,10 @@ async def user_delete_ad(callback: types.CallbackQuery):
         pending_users.discard(announcement["user_id"])
         announcement_index.pop(announcement["user_id"], None)
 
-    announcement["status"] = "deleted"
-    save_storage()
-    
+    with get_db() as conn:
+        conn.execute("UPDATE announcements SET status = 'deleted' WHERE id = ?", (ad_id,))
+        conn.commit()
+
     await callback.answer("Объявление успешно удалено.", show_alert=True)
     
     await callback.message.edit_caption(
