@@ -770,7 +770,11 @@ async def show_room(message: types.Message):
             )
         except Exception as e:
             logging.error(f"Ошибка при отправке фото для объявления {item['id']}: {e}")
-            await message.answer(f"⚠️ Не удалось загрузить фото для объявления ID: {item['id']}. Возможно, оно устарело.")
+            await message.answer(
+                f"⚠️ Не удалось загрузить фото для объявления ID: {item['id']}.\n\n{format_announcement(item)}",
+                parse_mode="HTML",
+                reply_markup=reply_markup
+            )
 
 
 @dp.message((F.text == "/myads") | (F.text == "📬 Мои объявления"), F.chat.type == "private")
@@ -844,7 +848,12 @@ async def open_room(callback: types.CallbackQuery):
             )
         except Exception as e:
             logging.error(f"Ошибка при отправке фото в open_room для ID {item['id']}: {e}")
-            await bot.send_message(callback.from_user.id, f"⚠️ Объявление ID {item['id']} недоступно (ошибка загрузки фото).")
+            await bot.send_message(
+                callback.from_user.id, 
+                f"⚠️ Объявление ID {item['id']} недоступно (ошибка загрузки фото).\n\n{format_announcement(item)}",
+                parse_mode="HTML",
+                reply_markup=reply_markup
+            )
 
 
 @dp.message(F.photo & F.caption, F.chat.type == "private")
