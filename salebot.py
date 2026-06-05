@@ -35,7 +35,7 @@ class AdminReject(StatesGroup):
     waiting_for_reason = State()
 
 def get_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=10.0)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -1057,12 +1057,15 @@ async def approve_lot(callback: types.CallbackQuery):
     
     with get_db() as conn:
         groups = conn.execute("SELECT pg.chat_id, pg.thread_id FROM publish_groups pg JOIN group_rooms gr ON pg.id = gr.group_id WHERE gr.room_name = ?", (room_name,)).fetchall()
+    
+    if not groups:
+        logging.warning(f"Внимание: Комната '{room_name}' не привязана ни к одной группе!")
 
     for grp in groups:
         try:
             msg = await bot.send_photo(
                 chat_id=grp["chat_id"],
-                message_thread_id=grp.get("thread_id"),
+                message_thread_id=grp["thread_id"],
                 photo=announcement["photo_file_id"],
                 caption=announcement["caption"]
             )
