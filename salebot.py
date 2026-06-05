@@ -277,8 +277,9 @@ async def prompt_room_management(message: types.Message):
         "👤 <b>Админы комнат:</b>\n"
         "➕ <b>Назначить:</b> <code>/assignadmin ID Название_комнаты</code>\n"
         "➖ <b>Разжаловать:</b> <code>/revokeadmin ID Название_комнаты</code>\n"
-        "📋 <b>Список админов:</b> <code>/adminlist</code>\n\n"
-        "📢 <b>Публикация:</b>\n"
+        "📋 <b>Список админов:</b> <code>/adminlist</code>\n"
+        "♻️ <b>Восстановить объявление:</b> <code>/restoread ID</code>\n\n"
+        "� <b>Публикация:</b>\n"
         "📋 <b>Список чатов:</b> <code>/groups</code>\n"
         "➕ <b>Добавить чат:</b> напиши <code>/addgroup</code> в самой группе\n"
         "⚙️ <b>Настроить комнаты:</b> <code>/setrooms</code> (внутри группы)",
@@ -1159,6 +1160,40 @@ async def delete_ad(callback: types.CallbackQuery):
     )
     await callback.answer("Объявление удалено из базы и групп.")
 
+
+@dp.message(F.text.startswith("/restoread"), F.chat.type == "private")
+async def restore_ad_cmd(message: types.Message):
+    if not is_main_admin(message.from_user.id):
+        return
+
+    parts = message.text.split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer("Использование: <code>/restoread ID_объявления</code>", parse_mode="HTML")
+        return
+
+    ad_id = int(parts[1])
+    announcement = find_announcement_by_id(ad_id)
+
+    if not announcement:
+        await message.answer(f"Объявление с ID {ad_id} не найдено в базе.")
+        return
+
+    if announcement["status"] == "approved":
+        await message.answer("Это объявление и так имеет статус 'Одобрено'.")
+        return
+
+    # Возвращаем статус approved
+    announcement["status"] = "approved"
+    # Если комната была удалена, предложим админу проверить её позже
+    room = announcement.get("room")
+    
+    save_storage()
+    
+    await message.answer(
+        f"✅ Объявление ID {ad_id} успешно восстановлено!\n"
+        f"Теперь оно снова отображается в комнате <b>{html.escape(str(room))}</b>.",
+        parse_mode="HTML"
+    )
 
 @dp.callback_query(F.data.startswith("userdeletead_"))
 async def user_delete_ad(callback: types.CallbackQuery):
