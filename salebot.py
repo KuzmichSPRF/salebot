@@ -1074,7 +1074,6 @@ async def finalize_rejection(announcement_id: int, admin_chat_id: int, admin_msg
 
     user_id = announcement["user_id"]
     pending_users.discard(user_id)
-    announcement_index.pop(user_id, None)
 
     msg_text = "😔 К сожалению, твое объявление не прошло модерацию."
     if reason:
@@ -1276,10 +1275,10 @@ async def handle_invalid_submission(message: types.Message):
 
 
 async def main():
+    logging.basicConfig(level=logging.INFO)
     init_db()
     migrate_json_to_db()
     load_storage()
-    logging.basicConfig(level=logging.INFO)
     dp.message.middleware(ThrottlingMiddleware(limit=1.0))
     await dp.start_polling(bot)
 
