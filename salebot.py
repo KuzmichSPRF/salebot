@@ -161,7 +161,6 @@ class ThrottlingMiddleware(BaseMiddleware):
         return await handler(event, data)
 
 pending_users = set()
-announcement_index = {}
 
 
 def is_main_admin(user_id: int) -> bool:
@@ -601,45 +600,37 @@ async def del_publish_group(message: types.Message):
     thread_id = message.message_thread_id
 
     if message.chat.type == "private":
-        parts = message.text.split()
-        if len(parts) == 2 and parts[1].isdigit():
-            idx = int(parts[1]) - 1
-            groups = storage.get("publish_groups", [])
-            if 0 <= idx < len(groups):
-                removed = groups.pop(idx)
-                save_storage()
-                await message.answer(f"✅ Группа '{removed['name']}' удалена из рассылки.")
-            else:
-                await message.answer("Неверный номер группы.")
-        else:
-            await message.answer("В личных сообщениях используй: /delgroup <номер_из_списка>\nИли напиши /delgroup прямо в группе.")
+        await message.answer("В личных сообщениях используйте команду /groups для управления списком групп.")
         return
 
-    groups = storage.get("publish_groups", [])
-    for g in groups:
-        if g["chat_id"] == chat_id and g.get("thread_id") == thread_id:
-            groups.remove(g)
-            save_storage()
+    with get_db() as conn:
+        res = conn.execute(
+            "DELETE FROM publish_groups WHERE chat_id = ? AND (thread_id = ? OR (thread_id IS NULL AND ? IS NULL))",
+            (chat_id, thread_id, thread_id)
+        )
+        if res.rowcount > 0:
+            conn.commit()
             await message.answer("✅ Эта группа удалена из списка для публикаций.")
-            return
-
-    await message.answer("Эта группа не найдена в списке для публикаций.")
+        else:
+            await message.answer("Эта группа не найдена в списке для публикаций.")
 
 
 @dp.message(F.text == "/groups", F.chat.type == "private")
 async def list_publish_groups(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+    if not is_main_admin(message.from_user.id):
         return
-    groups = storage.get("publish_groups", [])
+    with get_db() as conn:
+        groups = conn.execute("SELECT id, name, thread_id FROM publish_groups").fetchall()
+    
     if not groups:
         await message.answer("Список групп для публикаций пуст.")
         return
 
     builder = InlineKeyboardBuilder()
-    for i, g in enumerate(groups):
-        thread_info = f" (Ветка: {g.get('thread_id')})" if g.get("thread_id") else ""
-        builder.button(text=f"⚙️ Настроить {g.get('name')}{thread_info}", callback_data=f"editgrp_{i}")
-        builder.button(text=f"❌ Удалить", callback_data=f"delgroup_{i}")
+    for g in groups:
+        thread_info = f" (Ветка: {g['thread_id']})" if g['thread_id'] else ""
+        builder.button(text=f"⚙️ Настроить {g['name']}{thread_info}", callback_data=f"editgrp_{g['id']}")
+        builder.button(text=f"❌ Удалить", callback_data=f"delgroup_{g['id']}")
     builder.adjust(2)
 
     await message.answer(
@@ -891,7 +882,6 @@ async def handle_lot_submission(message: types.Message):
         conn.commit()
 
     pending_users.add(user_id)
-    announcement_index[user_id] = announcement_id
 
     await message.answer(
         "Выбери комнату, в которую хочешь предложить это объявление:",
@@ -915,7 +905,6 @@ async def user_cancel_lot(callback: types.CallbackQuery):
         conn.execute("UPDATE announcements SET status = 'cancelled' WHERE id = ?", (announcement_id,))
         conn.commit()
     pending_users.discard(callback.from_user.id)
-    announcement_index.pop(callback.from_user.id, None)
 
     await callback.message.edit_text("❌ Заявка отменена.")
 
@@ -999,7 +988,6 @@ async def approve_lot(callback: types.CallbackQuery):
     approved_at = datetime.utcnow().isoformat(sep=" ", timespec="seconds")
     user_id = announcement["user_id"]
     pending_users.discard(user_id)
-    announcement_index.pop(user_id, None)
 
     try:
         await bot.send_message(user_id, f"🎉 Твое объявление одобрено и сохранено в комнате '{room_name}'.")
@@ -1261,7 +1249,6 @@ async def user_delete_ad(callback: types.CallbackQuery):
 
     if announcement["status"] == "pending":
         pending_users.discard(announcement["user_id"])
-        announcement_index.pop(announcement["user_id"], None)
 
     with get_db() as conn:
         conn.execute("UPDATE announcements SET status = 'deleted' WHERE id = ?", (ad_id,))
