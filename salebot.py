@@ -158,6 +158,12 @@ def migrate_json_to_db():
 
         conn.commit()
     logging.info("Синхронизация данных из JSON в SQLite завершена.")
+    # Переименовываем файл, чтобы не проводить миграцию при каждом запуске
+    try:
+        os.rename(DATA_FILE, DATA_FILE + ".bak")
+        logging.info(f"Старый файл данных {DATA_FILE} переименован в .bak")
+    except Exception as e:
+        logging.error(f"Не удалось переименовать файл {DATA_FILE}: {e}")
 
 
 class ThrottlingMiddleware(BaseMiddleware):
