@@ -88,16 +88,24 @@ def init_db():
         # Проверка и добавление отсутствующих колонок (миграция)
         cursor = conn.execute("PRAGMA table_info(announcements)")
         columns = [row[1] for row in cursor.fetchall()]
-        if "photo_file_id" not in columns:
-            conn.execute("ALTER TABLE announcements ADD COLUMN photo_file_id TEXT")
-        if "approved_at" not in columns:
-            conn.execute("ALTER TABLE announcements ADD COLUMN approved_at TEXT")
-        if "admin_id" not in columns:
-            conn.execute("ALTER TABLE announcements ADD COLUMN admin_id INTEGER")
-        if "username" not in columns:
-            conn.execute("ALTER TABLE announcements ADD COLUMN username TEXT")
-        if "published_messages" not in columns:
-            conn.execute("ALTER TABLE announcements ADD COLUMN published_messages TEXT")
+
+        # Словарь всех необходимых колонок и их типов
+        required_columns = {
+            "username": "TEXT",
+            "photo_file_id": "TEXT",
+            "caption": "TEXT",
+            "status": "TEXT",
+            "room": "TEXT",
+            "created_at": "TEXT",
+            "approved_at": "TEXT",
+            "admin_id": "INTEGER",
+            "published_messages": "TEXT"
+        }
+
+        for col_name, col_type in required_columns.items():
+            if col_name not in columns:
+                logging.info(f"Добавление отсутствующей колонки {col_name} в таблицу announcements")
+                conn.execute(f"ALTER TABLE announcements ADD COLUMN {col_name} {col_type}")
 
         conn.commit()
 
