@@ -268,7 +268,8 @@ async def prompt_room_management(message: types.Message):
         "📋 <b>Список админов:</b> <code>/adminlist</code>\n\n"
         "📢 <b>Публикация:</b>\n"
         "📋 <b>Список чатов:</b> <code>/groups</code>\n"
-        "➕ <b>Добавить чат:</b> напиши <code>/addgroup</code> в самой группе ИЛИ отправь боту <code>/addgroup ID_чата Название</code>",
+        "➕ <b>Добавить чат:</b> напиши <code>/addgroup</code> в самой группе\n"
+        "⚙️ <b>Настроить комнаты:</b> <code>/setrooms</code> (внутри группы)",
         parse_mode="HTML",
         reply_markup=get_main_menu(message.from_user.id)
     )
@@ -508,6 +509,35 @@ async def add_publish_group(message: types.Message):
                 )
             except Exception as e:
                 logging.error(f"Не удалось отправить уведомление админу {admin_id}: {e}")
+
+
+@dp.message(F.text.startswith("/setrooms"))
+async def set_rooms_command(message: types.Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+
+    chat_id = message.chat.id
+    thread_id = message.message_thread_id
+    
+    groups = storage.get("publish_groups", [])
+    group_idx = -1
+    for i, g in enumerate(groups):
+        if g["chat_id"] == chat_id and g.get("thread_id") == thread_id:
+            group_idx = i
+            break
+    
+    if group_idx == -1:
+        if message.chat.type == "private":
+            await message.answer("В личных сообщениях используйте команду /groups для выбора чата.")
+        else:
+            await message.answer("Этот чат еще не добавлен в список рассылки. Используйте /addgroup.")
+        return
+
+    await message.answer(
+        f"⚙️ Настройка комнат для чата <b>{html.escape(groups[group_idx].get('name'))}</b>:",
+        reply_markup=get_group_rooms_keyboard(group_idx),
+        parse_mode="HTML"
+    )
 
 
 @dp.message(F.text.startswith("/delgroup"))
