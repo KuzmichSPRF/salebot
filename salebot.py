@@ -40,16 +40,100 @@ def get_db():
 
 def init_db():
     with get_db() as conn:
+        # Комнаты
         conn.execute("CREATE TABLE IF NOT EXISTS rooms (name TEXT PRIMARY KEY)")
-        # Если вы планируете переводить и остальное на БД:
+        # Объявления (расширенная схема)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS announcements (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id INTEGER PRIMARY KEY,
                 user_id INTEGER,
-                status TEXT
+                username TEXT,
+                photo_file_id TEXT,
+                caption TEXT,
+                status TEXT,
+                room TEXT,
+                created_at TEXT,
+                approved_at TEXT,
+                admin_id INTEGER,
+                published_messages TEXT
+            )
+        """)
+        # Группы для публикации
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS publish_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER,
+                thread_id INTEGER,
+                name TEXT
+            )
+        """)
+        # Связь групп и комнат (многие-ко-многим)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS group_rooms (
+                group_id INTEGER,
+                room_name TEXT,
+                PRIMARY KEY (group_id, room_name)
+            )
+        """)
+        # Модераторы комнат
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS room_admins (
+                user_id INTEGER,
+                room_name TEXT,
+                PRIMARY KEY (user_id, room_name)
             )
         """)
         conn.commit()
+
+def migrate_json_to_db():
+    """Переносит данные из storage.json в SQLite, если они еще не перенесены."""
+    if not os.path.exists(DATA_FILE):
+        return
+
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        logging.error(f"Ошибка чтения JSON при миграции: {e}")
+        return
+
+    with get_db() as conn:
+        # 1. Комнаты
+        for room in data.get("rooms", []):
+            conn.execute("INSERT OR IGNORE INTO rooms (name) VALUES (?)", (room,))
+        
+        # 2. Объявления
+        for ann in data.get("announcements", []):
+            conn.execute("""
+                INSERT OR IGNORE INTO announcements 
+                (id, user_id, username, photo_file_id, caption, status, room, created_at, approved_at, admin_id, published_messages)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                ann.get("id"), ann.get("user_id"), ann.get("username"), 
+                ann.get("photo_file_id"), ann.get("caption"), ann.get("status"), 
+                ann.get("room"), ann.get("created_at"), ann.get("approved_at"), 
+                ann.get("admin_id"), json.dumps(ann.get("published_messages", []))
+            ))
+
+        # 3. Админы комнат
+        for room, admins in data.get("room_admins", {}).items():
+            for admin_id in admins:
+                conn.execute("INSERT OR IGNORE INTO room_admins (user_id, room_name) VALUES (?, ?)", (admin_id, room))
+
+        # 4. Группы публикации (упрощенно, проверяем по chat_id)
+        for grp in data.get("publish_groups", []):
+            # Проверяем существование
+            res = conn.execute("SELECT id FROM publish_groups WHERE chat_id = ? AND (thread_id = ? OR (thread_id IS NULL AND ? IS NULL))", 
+                             (grp.get("chat_id"), grp.get("thread_id"), grp.get("thread_id"))).fetchone()
+            if not res:
+                cur = conn.execute("INSERT INTO publish_groups (chat_id, thread_id, name) VALUES (?, ?, ?)", 
+                                 (grp.get("chat_id"), grp.get("thread_id"), grp.get("name")))
+                group_id = cur.lastrowid
+                for r_name in grp.get("rooms", []):
+                    conn.execute("INSERT OR IGNORE INTO group_rooms (group_id, room_name) VALUES (?, ?)", (group_id, r_name))
+
+        conn.commit()
+    logging.info("Синхронизация данных из JSON в SQLite завершена.")
 
 
 class ThrottlingMiddleware(BaseMiddleware):
@@ -1303,6 +1387,7 @@ async def handle_invalid_submission(message: types.Message):
 
 async def main():
     init_db()
+    migrate_json_to_db()
     load_storage()
     logging.basicConfig(level=logging.INFO)
     dp.message.middleware(ThrottlingMiddleware(limit=1.0))
