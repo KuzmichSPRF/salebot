@@ -84,6 +84,15 @@ def init_db():
                 PRIMARY KEY (user_id, room_name)
             )
         """)
+
+        # Проверка и добавление отсутствующих колонок (миграция)
+        cursor = conn.execute("PRAGMA table_info(announcements)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "username" not in columns:
+            conn.execute("ALTER TABLE announcements ADD COLUMN username TEXT")
+        if "published_messages" not in columns:
+            conn.execute("ALTER TABLE announcements ADD COLUMN published_messages TEXT")
+
         conn.commit()
 
 def migrate_json_to_db():
