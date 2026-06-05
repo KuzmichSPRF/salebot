@@ -830,11 +830,16 @@ async def my_ads(message: types.Message):
     user_id = message.from_user.id
     update_user_info(user_id, message.from_user.username)
     with get_db() as conn:
-        rows = conn.execute("SELECT * FROM announcements WHERE user_id = ?", (user_id,)).fetchall()
+        # Показываем только актуальные объявления: черновики, на модерации, одобренные или отклоненные.
+        # Игнорируем статусы 'deleted' и 'cancelled'.
+        rows = conn.execute(
+            "SELECT * FROM announcements WHERE user_id = ? AND status NOT IN ('deleted', 'cancelled')", 
+            (user_id,)
+        ).fetchall()
         user_items = [dict(r) for r in rows]
 
     if not user_items:
-        await message.answer("У тебя еще нет объявлений.", reply_markup=get_main_menu(user_id))
+        await message.answer("У тебя пока нет активных объявлений.", reply_markup=get_main_menu(user_id))
         return
 
     await message.answer("📬 <b>Твои объявления:</b>", parse_mode="HTML")
