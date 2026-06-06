@@ -10,7 +10,7 @@ from typing import Any, Awaitable, Callable, Dict
 from datetime import datetime
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, types, BaseMiddleware
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -407,18 +407,17 @@ async def prompt_room_management(message: types.Message):
     )
 
 
-@dp.message(F.text.startswith("/newroom"), F.chat.type == "private")
-async def add_room(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+@dp.message(Command("newroom"), F.chat.type == "private", state="*")
+async def add_room(message: types.Message, command: CommandObject):
+    if not is_main_admin(message.from_user.id):
         await message.answer("Только администратор может создавать комнаты.")
         return
 
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].strip():
+    if not command.args:
         await message.answer("Использование: /newroom Название_комнаты", reply_markup=get_main_menu(message.from_user.id))
         return
 
-    room_name = normalize_room(parts[1])
+    room_name = normalize_room(command.args)
     if not room_name:
         await message.answer("Название комнаты не может быть пустым.")
         return
@@ -436,18 +435,18 @@ async def add_room(message: types.Message):
             await message.answer(f"Комната '{room_name}' уже существует.", reply_markup=get_main_menu(message.from_user.id))
 
 
-@dp.message(F.text.startswith("/editroom"), F.chat.type == "private")
-async def edit_room(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+@dp.message(Command("editroom"), F.chat.type == "private", state="*")
+async def edit_room(message: types.Message, command: CommandObject):
+    if not is_main_admin(message.from_user.id):
         await message.answer("Только администратор может редактировать комнаты.")
         return
 
-    text_without_cmd = message.text[len("/editroom"):].strip()
-    parts = [p.strip() for p in text_without_cmd.split("|")]
-    if len(parts) != 2 or not parts[0] or not parts[1]:
+    if not command.args or "|" not in command.args:
         await message.answer("Использование: /editroom Старое_название | Новое_название\n(например: /editroom Авто | Автомобили)", reply_markup=get_main_menu(message.from_user.id))
         return
 
+    parts = [p.strip() for p in command.args.split("|")]
+    if len(parts) != 2 or not parts[0] or not parts[1]:
     old_name, new_name = parts[0], parts[1]
     with get_db() as conn:
         room_exists = conn.execute("SELECT 1 FROM rooms WHERE name = ?", (old_name,)).fetchone()
@@ -467,13 +466,13 @@ async def edit_room(message: types.Message):
             await message.answer(f"Ошибка при переименовании: {e}")
 
 
-@dp.message(F.text.startswith("/delroom"), F.chat.type == "private")
-async def del_room(message: types.Message):
-    if message.from_user.id not in ADMIN_IDS:
+@dp.message(Command("delroom"), F.chat.type == "private", state="*")
+async def del_room(message: types.Message, command: CommandObject):
+    if not is_main_admin(message.from_user.id):
         await message.answer("Только администратор может удалять комнаты.")
         return
 
-    room_name = message.text[len("/delroom"):].strip()
+    room_name = command.args.strip() if command.args else None
     if not room_name:
         await message.answer("Использование: /delroom Название_комнаты", reply_markup=get_main_menu(message.from_user.id))
         return
@@ -486,16 +485,16 @@ async def del_room(message: types.Message):
         await message.answer(f"Комната '{room_name}' успешно удалена.", reply_markup=get_main_menu(message.from_user.id))
 
 
-@dp.message(F.text.startswith("/assignadmin"), F.chat.type == "private")
-async def assign_admin(message: types.Message):
+@dp.message(Command("assignadmin"), F.chat.type == "private", state="*")
+async def assign_admin(message: types.Message, command: CommandObject):
     if not is_main_admin(message.from_user.id):
         return
         
-    parts = message.text.split(maxsplit=2)
-    if len(parts) < 3:
+    if not command.args or len(command.args.split()) < 2:
         await message.answer("Использование: /assignadmin ID_пользователя Название_комнаты")
         return
         
+    parts = command.args.split(maxsplit=1)
     try:
         new_admin_id = int(parts[1])
     except ValueError:
@@ -517,16 +516,16 @@ async def assign_admin(message: types.Message):
     await message.answer(f"✅ Пользователь {new_admin_id} назначен модератором комнаты '{room_name}'.")
 
 
-@dp.message(F.text.startswith("/revokeadmin"), F.chat.type == "private")
-async def revoke_admin(message: types.Message):
+@dp.message(Command("revokeadmin"), F.chat.type == "private", state="*")
+async def revoke_admin(message: types.Message, command: CommandObject):
     if not is_main_admin(message.from_user.id):
         return
         
-    parts = message.text.split(maxsplit=2)
-    if len(parts) < 3:
+    if not command.args or len(command.args.split()) < 2:
         await message.answer("Использование: /revokeadmin ID_пользователя Название_комнаты")
         return
         
+    parts = command.args.split(maxsplit=1)
     try:
         old_admin_id = int(parts[1])
     except ValueError:
@@ -540,7 +539,7 @@ async def revoke_admin(message: types.Message):
         await message.answer(f"❌ Пользователь {old_admin_id} удалён из модераторов комнаты '{room_name}'.")
 
 
-@dp.message(F.text == "/adminlist", F.chat.type == "private")
+@dp.message(Command("adminlist"), F.chat.type == "private", state="*")
 async def admin_list(message: types.Message):
     if not is_main_admin(message.from_user.id):
         return
