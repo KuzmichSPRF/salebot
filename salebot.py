@@ -447,6 +447,9 @@ async def edit_room(message: types.Message, command: CommandObject):
 
     parts = [p.strip() for p in command.args.split("|")]
     if len(parts) != 2 or not parts[0] or not parts[1]:
+        await message.answer("Использование: /editroom Старое_название | Новое_название\n(например: /editroom Авто | Автомобили)", reply_markup=get_main_menu(message.from_user.id))
+        return
+
     old_name, new_name = parts[0], parts[1]
     with get_db() as conn:
         room_exists = conn.execute("SELECT 1 FROM rooms WHERE name = ?", (old_name,)).fetchone()
@@ -496,12 +499,12 @@ async def assign_admin(message: types.Message, command: CommandObject):
         
     parts = command.args.split(maxsplit=1)
     try:
-        new_admin_id = int(parts[1])
-    except ValueError:
-        await message.answer("ID пользователя должен быть числом.")
+        new_admin_id = int(parts[0])
+        room_name = normalize_room(parts[1])
+    except (ValueError, IndexError):
+        await message.answer("Использование: /assignadmin ID_пользователя Название_комнаты\nID должен быть числом.")
         return
-        
-    room_name = normalize_room(parts[2])
+
     with get_db() as conn:
         room_exists = conn.execute("SELECT 1 FROM rooms WHERE name = ?", (room_name,)).fetchone()
         if not room_exists:
@@ -527,12 +530,12 @@ async def revoke_admin(message: types.Message, command: CommandObject):
         
     parts = command.args.split(maxsplit=1)
     try:
-        old_admin_id = int(parts[1])
-    except ValueError:
-        await message.answer("ID пользователя должен быть числом.")
+        old_admin_id = int(parts[0])
+        room_name = normalize_room(parts[1])
+    except (ValueError, IndexError):
+        await message.answer("Использование: /revokeadmin ID_пользователя Название_комнаты\nID должен быть числом.")
         return
-        
-    room_name = normalize_room(parts[2])
+
     with get_db() as conn:
         conn.execute("DELETE FROM room_admins WHERE user_id = ? AND room_name = ?", (old_admin_id, room_name))
         conn.commit()
