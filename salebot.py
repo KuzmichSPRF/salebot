@@ -11,6 +11,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, types, BaseMiddleware
 from aiogram.filters import Command, CommandObject, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -408,6 +409,7 @@ async def prompt_room_management(message: types.Message):
 
 
 @dp.message(Command("newroom"), F.chat.type == "private", state="*")
+@dp.message(Command("newroom"), F.chat.type == "private", StateFilter("*"))
 async def add_room(message: types.Message, command: CommandObject):
     if not is_main_admin(message.from_user.id):
         await message.answer("Только администратор может создавать комнаты.")
@@ -436,6 +438,7 @@ async def add_room(message: types.Message, command: CommandObject):
 
 
 @dp.message(Command("editroom"), F.chat.type == "private", state="*")
+@dp.message(Command("editroom"), F.chat.type == "private", StateFilter("*"))
 async def edit_room(message: types.Message, command: CommandObject):
     if not is_main_admin(message.from_user.id):
         await message.answer("Только администратор может редактировать комнаты.")
@@ -470,6 +473,7 @@ async def edit_room(message: types.Message, command: CommandObject):
 
 
 @dp.message(Command("delroom"), F.chat.type == "private", state="*")
+@dp.message(Command("delroom"), F.chat.type == "private", StateFilter("*"))
 async def del_room(message: types.Message, command: CommandObject):
     if not is_main_admin(message.from_user.id):
         await message.answer("Только администратор может удалять комнаты.")
@@ -489,6 +493,7 @@ async def del_room(message: types.Message, command: CommandObject):
 
 
 @dp.message(Command("assignadmin"), F.chat.type == "private", state="*")
+@dp.message(Command("assignadmin"), F.chat.type == "private", StateFilter("*"))
 async def assign_admin(message: types.Message, command: CommandObject):
     if not is_main_admin(message.from_user.id):
         return
@@ -520,6 +525,7 @@ async def assign_admin(message: types.Message, command: CommandObject):
 
 
 @dp.message(Command("revokeadmin"), F.chat.type == "private", state="*")
+@dp.message(Command("revokeadmin"), F.chat.type == "private", StateFilter("*"))
 async def revoke_admin(message: types.Message, command: CommandObject):
     if not is_main_admin(message.from_user.id):
         return
@@ -543,6 +549,7 @@ async def revoke_admin(message: types.Message, command: CommandObject):
 
 
 @dp.message(Command("adminlist"), F.chat.type == "private", state="*")
+@dp.message(Command("adminlist"), F.chat.type == "private", StateFilter("*"))
 async def admin_list(message: types.Message):
     if not is_main_admin(message.from_user.id):
         return
