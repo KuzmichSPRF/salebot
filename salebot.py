@@ -25,6 +25,7 @@ GROUP_ID = int(_group_id_env) if _group_id_env.lstrip('-').isdigit() else _group
 THREAD_ID = int(os.getenv("THREAD_ID")) if os.getenv("THREAD_ID") else None
 DATA_FILE = os.path.join(os.path.dirname(__file__), "storage.json")
 DB_FILE = os.path.join(os.path.dirname(__file__), "salebot.db")
+PROMO_TEXT = "\n\nВсе объявления можно посмотреть в @Raccogram_bot"
 # =============================================
 
 bot = Bot(token=BOT_TOKEN)
@@ -325,6 +326,7 @@ def format_announcement(item: dict) -> str:
         f"🏷️ Статус: {status}\n"
         f"📂 Комната: {room}\n"
         f"Описание: {html.escape(item['caption'])}"
+        f"{PROMO_TEXT}"
     )
 
 
@@ -861,6 +863,7 @@ async def my_ads(message: types.Message):
             f"📂 Комната: {room}\n"
             f"🕒 Добавлено: {item.get('created_at', '—')}\n\n"
             f"Описание:\n{html.escape(item['caption'])}"
+            f"{PROMO_TEXT}"
         )
 
         builder = InlineKeyboardBuilder()
@@ -1080,7 +1083,7 @@ async def approve_lot(callback: types.CallbackQuery):
                 chat_id=grp["chat_id"],
                 message_thread_id=grp["thread_id"],
                 photo=announcement["photo_file_id"],
-                caption=announcement["caption"]
+                caption=f"{announcement['caption']}{PROMO_TEXT}"
             )
             published_messages.append({
                 "chat_id": grp["chat_id"],
