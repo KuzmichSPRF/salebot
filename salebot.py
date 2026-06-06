@@ -947,6 +947,17 @@ async def handle_lot_submission(message: types.Message):
             await message.answer("Произошла ошибка состояния. Попробуй отправить объявление еще раз.")
         return
 
+    # Лимит Telegram для подписи к фото — 1024 символа.
+    # Мы вычитаем длину промо-текста и небольшой запас для системных данных (ID, Имя и т.д.)
+    # 850 символов — безопасный порог.
+    MAX_CAPTION_LEN = 850
+    if len(message.caption) > MAX_CAPTION_LEN:
+        await message.answer(
+            f"⚠️ Твоё описание слишком длинное ({len(message.caption)} симв.).\n"
+            f"Максимально допустимая длина — <b>{MAX_CAPTION_LEN}</b> символов, "
+            f"чтобы объявление корректно отображалось вместе со ссылками. Пожалуйста, сократи текст.")
+        return
+
     with get_db() as conn:
         rooms_count = conn.execute("SELECT COUNT(*) FROM rooms").fetchone()[0]
         if rooms_count == 0:
