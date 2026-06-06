@@ -864,6 +864,7 @@ async def my_ads(message: types.Message):
         
         caption = (
             f"📌 ID: {item['id']}\n"
+            f"👤 От: {html.escape(item.get('username', '—'))}\n"
             f"🏷️ Статус: {status_ru}\n"
             f"📂 Комната: {room}\n"
             f"🕒 Добавлено: {item.get('created_at', '—')}\n\n"
@@ -1114,7 +1115,7 @@ async def approve_lot(callback: types.CallbackQuery):
                 chat_id=grp["chat_id"],
                 message_thread_id=grp["thread_id"],
                 photo=announcement["photo_file_id"],
-                caption=f"{announcement['caption']}{PROMO_TEXT}"
+                caption=f"{announcement['caption']}\n\n👤 Контакт: {announcement['username']}{PROMO_TEXT}"
             )
             published_messages.append({
                 "chat_id": grp["chat_id"],
