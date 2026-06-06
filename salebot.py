@@ -1024,7 +1024,12 @@ async def user_select_room(callback: types.CallbackQuery):
     builder.button(text="❌ Отклонить", callback_data=f"reject_{announcement_id}")
     builder.adjust(2)
 
-    admin_caption = f"Новый лот от {html.escape(announcement['username'])} в комнату <b>{html.escape(room_name)}</b>:\n\n{html.escape(announcement['caption'])}"
+    # Ограничиваем длину текста, чтобы не превысить лимит Telegram в 1024 символа для фото
+    raw_caption = announcement['caption']
+    if len(raw_caption) > 800:
+        raw_caption = raw_caption[:800] + "..."
+
+    admin_caption = f"Новый лот от {html.escape(announcement['username'])} в комнату <b>{html.escape(room_name)}</b>:\n\n{html.escape(raw_caption)}"
     notify_admins = set(ADMIN_IDS)
     with get_db() as conn:
         room_admins = conn.execute("SELECT user_id FROM room_admins WHERE room_name = ?", (room_name,)).fetchall()
@@ -1032,6 +1037,9 @@ async def user_select_room(callback: types.CallbackQuery):
             notify_admins.add(r["user_id"])
 
     for admin_id in notify_admins:
+        if not admin_id:
+            continue
+            
         try:
             await bot.send_photo(
                 chat_id=admin_id,
@@ -1041,7 +1049,7 @@ async def user_select_room(callback: types.CallbackQuery):
                 parse_mode="HTML"
             )
         except Exception as e:
-            logging.error(f"Не удалось отправить админу {admin_id}: {e}")
+            logging.error(f"Ошибка отправки уведомления админу {admin_id} для комнаты {room_name}: {e}")
 
 
 @dp.callback_query(F.data.startswith("approve_"))
