@@ -347,7 +347,10 @@ async def start_cmd(message: types.Message):
                 await message.answer("У тебя есть незавершенная заявка. Пожалуйста, выбери комнату или отмени её:", reply_markup=get_user_room_keyboard(active["id"]))
                 return
             else:
-                await message.answer("Твое объявление уже на модерации. Пожалуйста, дождись решения администратора.", reply_markup=get_main_menu(user_id))
+                builder = InlineKeyboardBuilder()
+                builder.button(text="❌ Отменить текущую заявку", callback_data=f"urc_{active['id']}")
+                await message.answer("Твое объявление уже на модерации. Пожалуйста, дождись решения администратора или отмени её:", 
+                                   reply_markup=builder.as_markup())
                 return
         else:
             pending_users.discard(user_id)
@@ -869,10 +872,12 @@ async def my_ads(message: types.Message):
         )
 
         builder = InlineKeyboardBuilder()
-        if item["status"] in ["pending", "approved"]:
+        if item["status"] in ["draft", "pending"]:
+            builder.button(text="❌ Отменить заявку", callback_data=f"urc_{item['id']}")
+        elif item["status"] == "approved":
             builder.button(text="🗑 Удалить", callback_data=f"userdeletead_{item['id']}")
             
-        reply_markup = builder.as_markup() if item["status"] in ["pending", "approved"] else None
+        reply_markup = builder.as_markup() if item["status"] in ["draft", "pending", "approved"] else None
         
         await bot.send_photo(
             chat_id=user_id,
@@ -931,7 +936,11 @@ async def handle_lot_submission(message: types.Message):
             if active["status"] == "draft":
                 await message.answer("У тебя есть незавершенная заявка. Пожалуйста, выбери комнату или отмени её:", reply_markup=get_user_room_keyboard(active["id"]))
             else:
-                await message.answer("Твоя предыдущая заявка еще на модерации. Дождись решения администратора.")
+                builder = InlineKeyboardBuilder()
+                builder.button(text="❌ Отменить текущую заявку", callback_data=f"urc_{active['id']}")
+                await message.answer(
+                    "Твоя предыдущая заявка еще на модерации. Дождись решения администратора или отмени её, чтобы отправить новую.",
+                    reply_markup=builder.as_markup())
         else:
             # Если в сете есть, а в базе нет - чистим сет
             pending_users.discard(user_id)
@@ -969,8 +978,8 @@ async def user_cancel_lot(callback: types.CallbackQuery):
         await callback.answer("Ошибка доступа.", show_alert=True)
         return
 
-    if announcement["status"] != "draft":
-        await callback.answer("Заявка уже отправлена.", show_alert=True)
+    if announcement["status"] not in ["draft", "pending"]:
+        await callback.answer("Эту заявку уже нельзя отменить.", show_alert=True)
         return
 
     with get_db() as conn:
@@ -978,7 +987,8 @@ async def user_cancel_lot(callback: types.CallbackQuery):
         conn.commit()
     pending_users.discard(callback.from_user.id)
 
-    await callback.message.edit_text("❌ Заявка отменена.")
+    await callback.message.edit_text("❌ Заявка успешно отменена. Теперь ты можешь отправить новую.")
+    await callback.answer()
 
 
 @dp.callback_query(F.data.startswith("urs_"))
@@ -1355,6 +1365,14 @@ async def handle_invalid_submission(message: types.Message):
         active = get_active_announcement(user_id)
         if active and active["status"] == "draft":
             await message.answer("Выбери комнату для текущего объявления или отмени его:", reply_markup=get_user_room_keyboard(active["id"]))
+            return
+        elif active and active["status"] == "pending":
+            builder = InlineKeyboardBuilder()
+            builder.button(text="❌ Отменить текущую заявку", callback_data=f"urc_{active['id']}")
+            await message.answer(
+                "Твоё объявление находится на модерации. Ты можешь отменить его, если хочешь отправить новую заявку:",
+                reply_markup=builder.as_markup()
+            )
             return
 
     await message.answer(
