@@ -10,7 +10,6 @@ from typing import Any, Awaitable, Callable, Dict
 from datetime import datetime
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, types, BaseMiddleware
-from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -408,7 +407,6 @@ async def prompt_room_management(message: types.Message):
     )
 
 
-@dp.message(Command("newroom"), F.chat.type == "private", state="*")
 @dp.message(Command("newroom"), F.chat.type == "private", StateFilter("*"))
 async def add_room(message: types.Message, command: CommandObject):
     if not is_main_admin(message.from_user.id):
@@ -437,7 +435,6 @@ async def add_room(message: types.Message, command: CommandObject):
             await message.answer(f"Комната '{room_name}' уже существует.", reply_markup=get_main_menu(message.from_user.id))
 
 
-@dp.message(Command("editroom"), F.chat.type == "private", state="*")
 @dp.message(Command("editroom"), F.chat.type == "private", StateFilter("*"))
 async def edit_room(message: types.Message, command: CommandObject):
     if not is_main_admin(message.from_user.id):
@@ -472,7 +469,6 @@ async def edit_room(message: types.Message, command: CommandObject):
             await message.answer(f"Ошибка при переименовании: {e}")
 
 
-@dp.message(Command("delroom"), F.chat.type == "private", state="*")
 @dp.message(Command("delroom"), F.chat.type == "private", StateFilter("*"))
 async def del_room(message: types.Message, command: CommandObject):
     if not is_main_admin(message.from_user.id):
@@ -492,7 +488,6 @@ async def del_room(message: types.Message, command: CommandObject):
         await message.answer(f"Комната '{room_name}' успешно удалена.", reply_markup=get_main_menu(message.from_user.id))
 
 
-@dp.message(Command("assignadmin"), F.chat.type == "private", state="*")
 @dp.message(Command("assignadmin"), F.chat.type == "private", StateFilter("*"))
 async def assign_admin(message: types.Message, command: CommandObject):
     if not is_main_admin(message.from_user.id):
@@ -524,7 +519,6 @@ async def assign_admin(message: types.Message, command: CommandObject):
     await message.answer(f"✅ Пользователь {new_admin_id} назначен модератором комнаты '{room_name}'.")
 
 
-@dp.message(Command("revokeadmin"), F.chat.type == "private", state="*")
 @dp.message(Command("revokeadmin"), F.chat.type == "private", StateFilter("*"))
 async def revoke_admin(message: types.Message, command: CommandObject):
     if not is_main_admin(message.from_user.id):
@@ -548,7 +542,6 @@ async def revoke_admin(message: types.Message, command: CommandObject):
         await message.answer(f"❌ Пользователь {old_admin_id} удалён из модераторов комнаты '{room_name}'.")
 
 
-@dp.message(Command("adminlist"), F.chat.type == "private", state="*")
 @dp.message(Command("adminlist"), F.chat.type == "private", StateFilter("*"))
 async def admin_list(message: types.Message):
     if not is_main_admin(message.from_user.id):
