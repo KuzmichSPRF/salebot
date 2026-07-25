@@ -314,6 +314,69 @@ def find_announcement_by_id(announcement_id: int):
             return data
     return None
 
+
+def get_user_announcements(user_id: int, username: str | None = None) -> list[dict]:
+    """Возвращает объявления пользователя, даже если старые записи были сохранены без user_id."""
+    with get_db() as conn:
+        search_username = f"@{username}" if username else f"ID: {user_id}"
+        rows = conn.execute(
+            """
+            SELECT * FROM announcements
+            WHERE (user_id = ? OR (user_id IS NULL AND username = ?))
+              AND status NOT IN ('deleted', 'cancelled')
+            ORDER BY id DESC
+            """,
+            (user_id, search_username),
+        ).fetchall()
+
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["published_messages"] = json.loads(item["published_messages"]) if item.get("published_messages") else []
+        items.append(item)
+    return items
+
+
+async def send_announcement_to_user(user_id: int, item: dict, reply_markup=None):
+    """Отправляет объявление пользователю, а при ошибке фото — отправляет текстовый fallback."""
+    room = item.get("room", "—")
+    status_ru = {
+        "draft": "📝 Черновик",
+        "pending": "⏳ На модерации",
+        "approved": "✅ Одобрено",
+        "rejected": "❌ Отклонено",
+        "cancelled": "🚫 Отменено",
+        "deleted": "🗑 Удалено",
+    }.get(item.get("status"), item.get("status"))
+
+    caption = (
+        f"📌 ID: {item['id']}\n"
+        f"👤 От: {html.escape(item.get('username', '—'))}\n"
+        f"🏷️ Статус: {status_ru}\n"
+        f"📂 Комната: {room}\n"
+        f"🕒 Добавлено: {item.get('created_at', '—')}\n\n"
+        f"Описание:\n{html.escape(item['caption'])}"
+        f"{PROMO_TEXT}"
+    )
+
+    try:
+        await bot.send_photo(
+            chat_id=user_id,
+            photo=item["photo_file_id"],
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
+    except Exception as e:
+        logging.error(f"Не удалось отправить фото объявления {item['id']} пользователю {user_id}: {e}")
+        await bot.send_message(
+            chat_id=user_id,
+            text=caption,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
+
+
 def format_announcement(item: dict) -> str:
     created = item.get("created_at", "—")
     owner = html.escape(item.get("username", f"ID:{item.get('user_id')}"))
@@ -836,14 +899,7 @@ async def show_room(message: types.Message):
 async def my_ads(message: types.Message):
     user_id = message.from_user.id
     update_user_info(user_id, message.from_user.username)
-    with get_db() as conn:
-        # Показываем только актуальные объявления: черновики, на модерации, одобренные или отклоненные.
-        # Игнорируем статусы 'deleted' и 'cancelled'.
-        rows = conn.execute(
-            "SELECT * FROM announcements WHERE user_id = ? AND status NOT IN ('deleted', 'cancelled')",
-            (user_id,)
-        ).fetchall()
-        user_items = [dict(r) for r in rows]
+    user_items = get_user_announcements(user_id, message.from_user.username)
 
     if not user_items:
         await message.answer("У тебя пока нет активных объявлений.", reply_markup=get_main_menu(user_id))
@@ -852,41 +908,14 @@ async def my_ads(message: types.Message):
     await message.answer("📬 <b>Твои объявления:</b>", parse_mode="HTML")
 
     for item in user_items:
-        room = item.get("room", "—")
-        status_ru = {
-            "draft": "📝 Черновик", 
-            "pending": "⏳ На модерации", 
-            "approved": "✅ Одобрено", 
-            "rejected": "❌ Отклонено", 
-            "cancelled": "🚫 Отменено", 
-            "deleted": "🗑 Удалено"
-        }.get(item["status"], item["status"])
-        
-        caption = (
-            f"📌 ID: {item['id']}\n"
-            f"👤 От: {html.escape(item.get('username', '—'))}\n"
-            f"🏷️ Статус: {status_ru}\n"
-            f"📂 Комната: {room}\n"
-            f"🕒 Добавлено: {item.get('created_at', '—')}\n\n"
-            f"Описание:\n{html.escape(item['caption'])}"
-            f"{PROMO_TEXT}"
-        )
-
         builder = InlineKeyboardBuilder()
         if item["status"] in ["draft", "pending"]:
             builder.button(text="❌ Отменить заявку", callback_data=f"urc_{item['id']}")
         elif item["status"] == "approved":
             builder.button(text="🗑 Удалить", callback_data=f"userdeletead_{item['id']}")
-            
-        reply_markup = builder.as_markup()
 
-        await bot.send_photo(
-            chat_id=user_id,
-            photo=item["photo_file_id"],
-            caption=caption,
-            parse_mode="HTML",
-            reply_markup=reply_markup
-        )
+        reply_markup = builder.as_markup()
+        await send_announcement_to_user(user_id, item, reply_markup=reply_markup)
 
 
 @dp.callback_query(F.data.startswith("or:"))
