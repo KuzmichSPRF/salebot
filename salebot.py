@@ -225,7 +225,13 @@ def get_main_menu(user_id: int = None) -> types.ReplyKeyboardMarkup:
     if is_any_admin(user_id):
         buttons.append([types.KeyboardButton(text="📖 Инструкция")])
     buttons.append([types.KeyboardButton(text="🔄 Главное меню")])
-    return types.ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True, one_time_keyboard=False)
+    return types.ReplyKeyboardMarkup(
+        keyboard=buttons,
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        is_persistent=True,
+        input_field_placeholder="Используйте кнопки для навигации"
+    )
 
 
 def load_storage():
