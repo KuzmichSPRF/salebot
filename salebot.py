@@ -878,8 +878,8 @@ async def my_ads(message: types.Message):
         elif item["status"] == "approved":
             builder.button(text="🗑 Удалить", callback_data=f"userdeletead_{item['id']}")
             
-        reply_markup = builder.as_markup() if item["status"] in ["draft", "pending", "approved"] else None
-        
+        reply_markup = builder.as_markup()
+
         await bot.send_photo(
             chat_id=user_id,
             photo=item["photo_file_id"],
