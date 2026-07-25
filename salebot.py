@@ -911,7 +911,7 @@ async def my_ads(message: types.Message):
         builder = InlineKeyboardBuilder()
         if item["status"] in ["draft", "pending"]:
             builder.button(text="❌ Отменить заявку", callback_data=f"urc_{item['id']}")
-        elif item["status"] == "approved":
+        elif item["status"] in ["approved", "rejected"]:
             builder.button(text="🗑 Удалить", callback_data=f"userdeletead_{item['id']}")
 
         reply_markup = builder.as_markup()
@@ -1376,7 +1376,7 @@ async def user_delete_ad(callback: types.CallbackQuery):
         await callback.answer("Объявление не найдено.", show_alert=True)
         return
         
-    if announcement["status"] not in ["pending", "approved"]:
+    if announcement["status"] not in ["pending", "approved", "rejected"]:
         await callback.answer("Это объявление уже нельзя удалить.", show_alert=True)
         return
 
