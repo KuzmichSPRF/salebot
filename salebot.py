@@ -840,7 +840,7 @@ async def my_ads(message: types.Message):
         # Показываем только актуальные объявления: черновики, на модерации, одобренные или отклоненные.
         # Игнорируем статусы 'deleted' и 'cancelled'.
         rows = conn.execute(
-            "SELECT * FROM announcements WHERE user_id = ? AND status NOT IN ('deleted', 'cancelled')", 
+            "SELECT * FROM announcements WHERE user_id = ? AND status NOT IN ('deleted', 'cancelled')",
             (user_id,)
         ).fetchall()
         user_items = [dict(r) for r in rows]
