@@ -229,7 +229,6 @@ def get_main_menu(user_id: int = None) -> types.ReplyKeyboardMarkup:
         keyboard=buttons,
         resize_keyboard=True,
         one_time_keyboard=False,
-        is_persistent=True,
         input_field_placeholder="Используйте кнопки для навигации"
     )
 
